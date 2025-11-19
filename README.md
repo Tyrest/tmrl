@@ -1,3 +1,7 @@
+# This is a Fork of TMRL: https://github.com/trackmania-rl/tmrl
+
+This repo will be used to experiment with TMRL for the CMU Deep Reinforcement Learning Course.
+
 # TMRL
 
 [![PyPI version](https://badge.fury.io/py/tmrl.svg)](https://badge.fury.io/py/tmrl)
@@ -32,38 +36,41 @@
 
 
 ## Quick links
-- [The TMRL Project](#the-tmrl-project)
+- [This is a Fork of TMRL: https://github.com/trackmania-rl/tmrl](#this-is-a-fork-of-tmrl-httpsgithubcomtrackmania-rltmrl)
+- [TMRL](#tmrl)
+  - [Quick links](#quick-links)
+- [The TMRL project](#the-tmrl-project)
   - [Introduction](#introduction)
-    - [User features](#user-features-trackmania-example-pipeline)
-    - [Developer features](#developer-features-real-world-applications-in-python)
-    - [TMRL in the media](#tmrl-in-the-media)
-  - [Installation](readme/Install.md)
-    - [Windows](readme/Install.md)
-    - [Linux](readme/install_linux.md)
-  - [Getting started](readme/get_started.md)
-    - [Quick reference guide](readme/reference_guide.md)
-  - [TMRL python library for robot learning](readme/tuto_library.md)
-    - [API reference](https://tmrl.readthedocs.io/en/latest/)
-  - [Security (important)](#security)
-- [TrackMania applications](#autonomous-driving-in-trackmania)
-  - [TrackMania Roborace League](readme/competition.md)
+    - [User features (TrackMania example pipeline):](#user-features-trackmania-example-pipeline)
+    - [Developer features (real-world applications in Python):](#developer-features-real-world-applications-in-python)
+    - [TMRL in the media:](#tmrl-in-the-media)
+  - [Installation](#installation)
+  - [Getting started](#getting-started)
+  - [TMRL python library](#tmrl-python-library)
+  - [Security](#security)
+- [Autonomous driving in TrackMania](#autonomous-driving-in-trackmania)
+  - [TrackMania Roborace League](#trackmania-roborace-league)
   - [TrackMania Gymnasium environment](#trackmania-gymnasium-environment)
-    - [LIDAR environment](#lidar-environment)
-    - [Full environment](#full-environment)
+    - [Full environment:](#full-environment)
+    - [LIDAR environment:](#lidar-environment)
+    - [LIDAR with track progress](#lidar-with-track-progress)
   - [TrackMania training details](#trackmania-training-details)
-    - [RL basics](#reinforcement-learning-basics)
-    - [SAC](#soft-actor-critic)
-    - [REDQ](#randomized-ensembled-double-q-learning)
+    - [Reinforcement Learning basics](#reinforcement-learning-basics)
+    - [Soft Actor-Critic](#soft-actor-critic)
+    - [Randomized Ensembled Double Q-Learning](#randomized-ensembled-double-q-learning)
     - [A clever reward](#a-clever-reward)
     - [Available action spaces](#available-action-spaces)
     - [Available observation spaces](#available-observation-spaces)
     - [Results](#results)
 - [Framework details](#framework-details)
-    - [Real-time Gym framework](#real-time-gym-framework)
-      - [rtgym repo](https://github.com/yannbouteiller/rtgym)
-  - [Remote training architecture](#remote-training-architecture)
-- [Contribute](#authors)
-- [Sponsors](#sponsors)
+  - [Real-time Gym framework:](#real-time-gym-framework)
+  - [Remote training architecture:](#remote-training-architecture)
+- [Development roadmap:](#development-roadmap)
+- [Authors:](#authors)
+  - [Maintainers:](#maintainers)
+  - [Contributors:](#contributors)
+- [License](#license)
+- [Sponsors:](#sponsors)
 
 
 # The TMRL project
