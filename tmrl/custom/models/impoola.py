@@ -61,7 +61,7 @@ class ImpoolaCNN(nn.Module):
 
     Input: (B, 3, 64, 64)
     """
-    def __init__(self, input_channels=cfg.IMG_HIST_LEN, width_scale=2, output_dim=256):
+    def __init__(self, input_channels=cfg.IMG_HIST_LEN, width_scale=1, output_dim=256):
         super().__init__()
         
         channels = (16 * width_scale, 32 * width_scale, 32 * width_scale)
@@ -91,6 +91,8 @@ class ImpoolaCNN(nn.Module):
 class ImpoolaCNNActorCritic(nn.Module):
     def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
         super().__init__()
+
+        print("Using ImpoolaCNNActorCritic model.")
 
         # build policy and value functions
         self.actor = SquashedGaussianImpoolaCNNActor(observation_space, action_space, hidden_sizes, activation)
