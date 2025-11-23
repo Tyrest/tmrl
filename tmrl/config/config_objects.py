@@ -12,6 +12,7 @@ from tmrl.custom.custom_memories import MemoryTMFull, MemoryTMLidar, MemoryTMLid
 from tmrl.custom.tm.tm_preprocessors import obs_preprocessor_tm_act_in_obs, obs_preprocessor_tm_lidar_act_in_obs, obs_preprocessor_tm_lidar_progress_act_in_obs
 from tmrl.envs import GenericGymEnv
 from tmrl.custom.custom_models import SquashedGaussianMLPActor, MLPActorCritic, REDQMLPActorCritic, RNNActorCritic, SquashedGaussianRNNActor, SquashedGaussianVanillaCNNActor, VanillaCNNActorCritic, SquashedGaussianVanillaColorCNNActor, VanillaColorCNNActorCritic
+from tmrl.custom.models.impoola import ImpoolaCNNActorCritic, SquashedGaussianImpoolaCNNActor
 from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
 from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
 from tmrl.custom.custom_checkpoints import update_run_instance
@@ -36,8 +37,14 @@ if cfg.PRAGMA_LIDAR:
 else:
     assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
     assert ALG_NAME == "SAC", f"{ALG_NAME} is not implemented here."
-    TRAIN_MODEL = VanillaCNNActorCritic if cfg.GRAYSCALE else VanillaColorCNNActorCritic
-    POLICY = SquashedGaussianVanillaCNNActor if cfg.GRAYSCALE else SquashedGaussianVanillaColorCNNActor
+    if cfg.MODEL_ARCH == "impoola":
+        TRAIN_MODEL = ImpoolaCNNActorCritic
+        POLICY = SquashedGaussianImpoolaCNNActor
+    elif cfg.MODEL_ARCH == "vanilla":
+        TRAIN_MODEL = VanillaCNNActorCritic if cfg.GRAYSCALE else VanillaColorCNNActorCritic
+        POLICY = SquashedGaussianVanillaCNNActor if cfg.GRAYSCALE else SquashedGaussianVanillaColorCNNActor
+    else:
+        raise ValueError(f"Unknown model architecture: {cfg.MODEL_ARCH}")
 
 if cfg.PRAGMA_LIDAR:
     if cfg.PRAGMA_PROGRESS:

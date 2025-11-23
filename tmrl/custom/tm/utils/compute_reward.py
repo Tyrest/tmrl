@@ -17,7 +17,8 @@ class RewardFunction:
                  nb_obs_backward=10,
                  nb_zero_rew_before_failure=10,
                  min_nb_steps_before_failure=int(3.5 * 20),
-                 max_dist_from_traj=60.0):
+                 max_dist_from_traj=60.0,
+                 reward_for_speed=0.0):
         """
         Instantiates a reward function for TM2020.
 
@@ -28,6 +29,7 @@ class RewardFunction:
             nb_zero_rew_before_failure: after this number of steps with no reward, episode is terminated
             min_nb_steps_before_failure: the episode must have at least this number of steps before failure
             max_dist_from_traj: the reward is 0 if the car is further than this distance from the demo trajectory
+            reward_for_speed: the reward is increased by this value times the speed
         """
         if not os.path.exists(reward_data_path):
             logging.debug(f" reward not found at path:{reward_data_path}")
@@ -42,17 +44,19 @@ class RewardFunction:
         self.nb_zero_rew_before_failure = nb_zero_rew_before_failure
         self.min_nb_steps_before_failure = min_nb_steps_before_failure
         self.max_dist_from_traj = max_dist_from_traj
+        self.reward_for_speed = reward_for_speed
         self.step_counter = 0
         self.failure_counter = 0
         self.datalen = len(self.data)
 
         # self.traj = []
 
-    def compute_reward(self, pos):
+    def compute_reward(self, pos, speed=0.0):
         """
         Computes the current reward given the position pos
         Args:
             pos: the current position
+            speed: the current speed
         Returns:
             float, bool: the reward and the terminated signal
         """
@@ -83,6 +87,8 @@ class RewardFunction:
 
         # The reward is then proportional to the number of passed indexes (i.e., track distance):
         reward = (best_index - self.cur_idx) / 100.0
+        if self.reward_for_speed > 0.0:
+            reward += speed * self.reward_for_speed
 
         if best_index == self.cur_idx:  # if the best index didn't change, we rewind (more Markovian reward)
             min_dist = np.inf

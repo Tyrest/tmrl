@@ -82,7 +82,8 @@ class TM2020Interface(RealTimeGymInterface):
                                               nb_obs_backward=cfg.REWARD_CONFIG['CHECK_BACKWARD'],
                                               nb_zero_rew_before_failure=cfg.REWARD_CONFIG['FAILURE_COUNTDOWN'],
                                               min_nb_steps_before_failure=cfg.REWARD_CONFIG['MIN_STEPS'],
-                                              max_dist_from_traj=cfg.REWARD_CONFIG['MAX_STRAY'])
+                                              max_dist_from_traj=cfg.REWARD_CONFIG['MAX_STRAY'],
+                                              reward_for_speed=cfg.REWARD_CONFIG.get('REWARD_FOR_SPEED', 0.0))
         self.client = TM2020OpenPlanetClient()
 
     def initialize(self):
@@ -196,7 +197,7 @@ class TM2020Interface(RealTimeGymInterface):
         rpm = np.array([
             data[10],
         ], dtype='float32')
-        rew, terminated = self.reward_function.compute_reward(pos=np.array([data[2], data[3], data[4]]))
+        rew, terminated = self.reward_function.compute_reward(pos=np.array([data[2], data[3], data[4]]), speed=data[0])
         self.img_hist.append(img)
         imgs = np.array(list(self.img_hist))
         obs = [speed, gear, rpm, imgs]
@@ -279,7 +280,7 @@ class TM2020InterfaceLidar(TM2020Interface):
         obs must be a list of numpy arrays
         """
         img, speed, data = self.grab_lidar_speed_and_data()
-        rew, terminated = self.reward_function.compute_reward(pos=np.array([data[2], data[3], data[4]]))
+        rew, terminated = self.reward_function.compute_reward(pos=np.array([data[2], data[3], data[4]]), speed=data[0])
         self.img_hist.append(img)
         imgs = np.array(list(self.img_hist), dtype='float32')
         obs = [speed, imgs]
@@ -326,7 +327,7 @@ class TM2020InterfaceLidarProgress(TM2020InterfaceLidar):
         obs must be a list of numpy arrays
         """
         img, speed, data = self.grab_lidar_speed_and_data()
-        rew, terminated = self.reward_function.compute_reward(pos=np.array([data[2], data[3], data[4]]))
+        rew, terminated = self.reward_function.compute_reward(pos=np.array([data[2], data[3], data[4]]), speed=data[0])
         progress = np.array([self.reward_function.cur_idx / self.reward_function.datalen], dtype='float32')
         self.img_hist.append(img)
         imgs = np.array(list(self.img_hist), dtype='float32')
