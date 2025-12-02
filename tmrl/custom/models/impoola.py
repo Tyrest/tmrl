@@ -4,7 +4,6 @@ import torch.nn.functional as F
 import numpy as np
 from torch.distributions.normal import Normal
 from tmrl.actor import TorchActorModule
-from tmrl.util import prod
 import tmrl.config.config_constants as cfg
 
 LOG_STD_MAX = 2

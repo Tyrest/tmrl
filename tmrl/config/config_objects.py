@@ -13,6 +13,7 @@ from tmrl.custom.tm.tm_preprocessors import obs_preprocessor_tm_act_in_obs, obs_
 from tmrl.envs import GenericGymEnv
 from tmrl.custom.custom_models import SquashedGaussianMLPActor, MLPActorCritic, REDQMLPActorCritic, RNNActorCritic, SquashedGaussianRNNActor, SquashedGaussianVanillaCNNActor, VanillaCNNActorCritic, SquashedGaussianVanillaColorCNNActor, VanillaColorCNNActorCritic
 from tmrl.custom.models.impoola import ImpoolaCNNActorCritic, SquashedGaussianImpoolaCNNActor
+from tmrl.custom.models.dinov3_policy import DinoV3ActorCritic, SquashedGaussianDinoV3Actor
 from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
 from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
 from tmrl.custom.custom_checkpoints import update_run_instance
@@ -40,6 +41,9 @@ else:
     if cfg.MODEL_ARCH == "impoola":
         TRAIN_MODEL = ImpoolaCNNActorCritic
         POLICY = SquashedGaussianImpoolaCNNActor
+    elif cfg.MODEL_ARCH == "dinov3":
+        TRAIN_MODEL = DinoV3ActorCritic
+        POLICY = SquashedGaussianDinoV3Actor
     elif cfg.MODEL_ARCH == "vanilla":
         TRAIN_MODEL = VanillaCNNActorCritic if cfg.GRAYSCALE else VanillaColorCNNActorCritic
         POLICY = SquashedGaussianVanillaCNNActor if cfg.GRAYSCALE else SquashedGaussianVanillaColorCNNActor

@@ -9,6 +9,7 @@ import pickle
 import signal
 import subprocess
 import weakref
+import sys
 from pathlib import Path
 # from contextlib import contextmanager
 # from dataclasses import Field, dataclass, fields, is_dataclass, make_dataclass
@@ -200,10 +201,38 @@ def dump(obj, path):
 
 
 def load(path):
+    # Hack to support loading legacy checkpoints that depend on custom models
+    custom_models_path = str(Path(__file__).resolve().parent / "custom" / "models")
+    if custom_models_path not in sys.path:
+        sys.path.append(custom_models_path)
+    
+    # Add external dinov3 repo to path
+    dinov3_repo_path = "/home/tyler/Documents/CMU/dinov3"
+    if dinov3_repo_path not in sys.path:
+        sys.path.append(dinov3_repo_path)
+
+    # Redirect tmrl.custom.models.dinov3 to tmrl.custom.models.dinov3_policy
+    try:
+        import tmrl.custom.models.dinov3_policy as dinov3_policy
+        sys.modules['tmrl.custom.models.dinov3'] = dinov3_policy
+        
+        # Also try to patch the top-level 'dinov3' if it exists (as a package)
+        # to include the policy classes, in case the checkpoint references 'dinov3.DinoV3ActorCritic'
+        try:
+            import dinov3
+            if hasattr(dinov3, '__path__'): # It is a package
+                dinov3.DinoV3ActorCritic = dinov3_policy.DinoV3ActorCritic
+                dinov3.SquashedGaussianDinoV3Actor = dinov3_policy.SquashedGaussianDinoV3Actor
+                dinov3.DinoV3QFunction = dinov3_policy.DinoV3QFunction
+                dinov3.DinoV3Encoder = dinov3_policy.DinoV3Encoder
+        except ImportError:
+            pass
+            
+    except ImportError:
+        pass
+
     with open(path, 'rb') as f:
         return pickle.load(f)
-
-
 def save_json(d, path):
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(d, f, ensure_ascii=False, indent=2)
