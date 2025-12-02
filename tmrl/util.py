@@ -221,9 +221,9 @@ def load(path):
         try:
             import dinov3
             if hasattr(dinov3, '__path__'): # It is a package
-                dinov3.DinoV3ActorCritic = dinov3_policy.DinoV3ActorCritic
-                dinov3.SquashedGaussianDinoV3Actor = dinov3_policy.SquashedGaussianDinoV3Actor
-                dinov3.DinoV3QFunction = dinov3_policy.DinoV3QFunction
+                dinov3.DinoV3FeatureActorCritic = dinov3_policy.DinoV3FeatureActorCritic
+                dinov3.SquashedGaussianDinoV3FeatureActor = dinov3_policy.SquashedGaussianDinoV3FeatureActor
+                dinov3.DinoV3FeatureQFunction = dinov3_policy.DinoV3FeatureQFunction
                 dinov3.DinoV3Encoder = dinov3_policy.DinoV3Encoder
         except ImportError:
             pass

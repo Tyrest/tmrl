@@ -64,6 +64,25 @@ def get_local_buffer_sample_tm20_imgs(prev_act, obs, rew, terminated, truncated,
     return prev_act_mod, obs_mod, rew_mod, terminated_mod, truncated_mod, info_mod
 
 
+def get_local_buffer_sample_dinov3(prev_act, obs, rew, terminated, truncated, info):
+    """
+    Sample compressor for MemoryTMDino
+    Input:
+        prev_act: action computed from a previous observation and applied to yield obs in the transition
+        obs, rew, terminated, truncated, info: outcome of the transition
+    """
+    prev_act_mod = prev_act
+    # obs is (speed, gear, rpm, features, ...)
+    # features is obs[3]. It is a numpy array of floats.
+    # We don't need to compress it or convert to uint8.
+    obs_mod = (obs[0], obs[1], obs[2], obs[3])
+    rew_mod = rew
+    terminated_mod = terminated
+    truncated_mod = truncated
+    info_mod = info
+    return prev_act_mod, obs_mod, rew_mod, terminated_mod, truncated_mod, info_mod
+
+
 # FUNCTIONS ====================================================
 
 
@@ -576,3 +595,20 @@ class MemoryTMFull(MemoryTM):
             self.data[10] = self.data[10][to_trim:]
 
         return self
+
+
+class MemoryTMDino(MemoryTMFull):
+    def load_imgs(self, item):
+        # We override this because our "images" are already stacked feature vectors.
+        # We don't need to load a history window, just the specific feature vector for the step.
+        # Standard load_imgs loads [item + offset : item + offset + hist + 1]
+        # We want [idx_last, idx_now]
+        
+        idx_last = item + self.min_samples - 1
+        idx_now = item + self.min_samples
+        
+        # We return a stack of 2: [last_obs_features, new_obs_features]
+        # get_transition will split this into [last] and [new]
+        # Each element is (FeatureDim,)
+        res = [self.data[3][idx_last], self.data[3][idx_now]]
+        return np.stack(res).astype(np.float32)

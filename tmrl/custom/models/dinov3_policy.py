@@ -20,8 +20,6 @@ def mlp(sizes, activation, output_activation=nn.Identity):
 class DinoV3Encoder(nn.Module):
     def __init__(self, input_channels=cfg.IMG_HIST_LEN):
         super().__init__()
-        if cfg.IMG_HIST_LEN != 1:
-            raise ValueError(f"DinoV3Encoder requires IMG_HIST_LEN to be 1, but got {cfg.IMG_HIST_LEN}")
         
         repo = "/home/tyler/Documents/CMU/dinov3"
         model_name = "dinov3_convnext_tiny"
@@ -50,10 +48,8 @@ class DinoV3Encoder(nn.Module):
         self.flat_features = self.backbone_dim
 
     def forward(self, x):
-        # x comes in as (B, 3, H, W) or (B, 1, H, W)
-        
-        if x.shape[1] == 1:
-            x = x.repeat(1, 3, 1, 1)
+        if x.shape[1] != 3:
+            raise ValueError(f"Expected input with 3 channels, got {x.shape[1]} channels.")
         
         # Resize and Normalize
         x = self.resize(x)
@@ -64,39 +60,34 @@ class DinoV3Encoder(nn.Module):
             
         return features
 
-class DinoV3ActorCritic(nn.Module):
+class DinoV3FeatureActorCritic(nn.Module):
     def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
         super().__init__()
-
-        print("Using DinoV3ActorCritic model.")
-
-        input_channels = cfg.IMG_HIST_LEN if cfg.GRAYSCALE else cfg.IMG_HIST_LEN * 3
-        self.encoder = DinoV3Encoder(input_channels=input_channels)
-
-        # build policy and value functions
-        self.actor = SquashedGaussianDinoV3Actor(observation_space, action_space, hidden_sizes, activation, encoder=self.encoder)
-        self.q1 = DinoV3QFunction(observation_space, action_space, hidden_sizes, activation, encoder=self.encoder)
-        self.q2 = DinoV3QFunction(observation_space, action_space, hidden_sizes, activation, encoder=self.encoder)
+        print("Using DinoV3FeatureActorCritic model (Features Input).")
+        self.actor = SquashedGaussianDinoV3FeatureActor(observation_space, action_space, hidden_sizes, activation)
+        self.q1 = DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation)
+        self.q2 = DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation)
 
     def act(self, obs, test=False):
         with torch.no_grad():
             a, _ = self.actor(obs, test, False)
             return a.squeeze().cpu().numpy()
 
-
-class SquashedGaussianDinoV3Actor(TorchActorModule):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU, encoder=None):
+class SquashedGaussianDinoV3FeatureActor(TorchActorModule):
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
         super().__init__(observation_space, action_space)
         dim_act = action_space.shape[0]
         act_limit = action_space.high[0]
         
-        if encoder is not None:
-            self.encoder = encoder
-        else:
-            input_channels = cfg.IMG_HIST_LEN if cfg.GRAYSCALE else cfg.IMG_HIST_LEN * 3
-            self.encoder = DinoV3Encoder(input_channels=input_channels)
+        # We assume features are passed, so we don't need encoder.
+        # We need to know feature dim. 
+        # DINOv3 tiny output dim is 384.
+        # Ideally we pass this or infer it.
+        # For now hardcode or use dummy encoder to get dim?
+        # Let's hardcode 768 for convnext_tiny.
+        self.feature_dim = 768 * cfg.IMG_HIST_LEN
         
-        self.mlp_input_features = self.encoder.flat_features + 9
+        self.mlp_input_features = self.feature_dim + 9
         self.mlp = mlp([self.mlp_input_features] + list(hidden_sizes), activation)
         
         self.mu_layer = nn.Linear(hidden_sizes[-1], dim_act)
@@ -104,18 +95,13 @@ class SquashedGaussianDinoV3Actor(TorchActorModule):
         self.act_limit = act_limit
 
     def forward(self, obs, test=False, with_logprob=True):
-        speed, gear, rpm, images, act1, act2 = obs
+        speed, gear, rpm, features, act1, act2 = obs
+        # features: (B, Dim)
         
-        if not cfg.GRAYSCALE:
-            # images: (B, 1, H, W, 3) -> (B, 3, H, W)
-            x = images.squeeze(1).permute(0, 3, 1, 2)
-        else:
-            # images: (B, 1, H, W)
-            x = images
+        if features.dim() > 2:
+            features = features.flatten(start_dim=1)
         
-        enc_out = self.encoder(x)
-        
-        mlp_in = torch.cat((speed, gear, rpm, enc_out, act1, act2), -1)
+        mlp_in = torch.cat((speed, gear, rpm, features, act1, act2), -1)
         net_out = self.mlp(mlp_in)
         
         mu = self.mu_layer(net_out)
@@ -145,34 +131,21 @@ class SquashedGaussianDinoV3Actor(TorchActorModule):
             a, _ = self.forward(obs, test, False)
             return a.squeeze().cpu().numpy()
 
-
-class DinoV3QFunction(nn.Module):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU, encoder=None):
+class DinoV3FeatureQFunction(nn.Module):
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
         super().__init__()
-        
-        if encoder is not None:
-            self.encoder = encoder
-        else:
-            input_channels = cfg.IMG_HIST_LEN if cfg.GRAYSCALE else cfg.IMG_HIST_LEN * 3
-            self.encoder = DinoV3Encoder(input_channels=input_channels)
-        
+        self.feature_dim = 768 * cfg.IMG_HIST_LEN
         act_dim = action_space.shape[0]
-        self.mlp_input_features = self.encoder.flat_features + 9 + act_dim
+        self.mlp_input_features = self.feature_dim + 9 + act_dim
         self.mlp = mlp([self.mlp_input_features] + list(hidden_sizes) + [1], activation)
 
     def forward(self, obs, act):
-        speed, gear, rpm, images, act1, act2 = obs
+        speed, gear, rpm, features, act1, act2 = obs
         
-        if not cfg.GRAYSCALE:
-            # images: (B, 1, H, W, 3) -> (B, 3, H, W)
-            x = images.squeeze(1).permute(0, 3, 1, 2)
-        else:
-            # images: (B, 1, H, W)
-            x = images
-        
-        enc_out = self.encoder(x)
-        
-        mlp_in = torch.cat((speed, gear, rpm, enc_out, act1, act2, act), -1)
+        if features.dim() > 2:
+            features = features.flatten(start_dim=1)
+
+        mlp_in = torch.cat((speed, gear, rpm, features, act1, act2, act), -1)
         q = self.mlp(mlp_in)
-        
         return torch.squeeze(q, -1)
+
