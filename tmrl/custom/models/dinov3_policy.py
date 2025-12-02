@@ -20,8 +20,6 @@ def mlp(sizes, activation, output_activation=nn.Identity):
 class DinoV3Encoder(nn.Module):
     def __init__(self, input_channels=cfg.IMG_HIST_LEN):
         super().__init__()
-        if cfg.IMG_HIST_LEN != 1:
-            raise ValueError(f"DinoV3Encoder requires IMG_HIST_LEN to be 1, but got {cfg.IMG_HIST_LEN}")
         
         repo = "/home/tyler/Documents/CMU/dinov3"
         model_name = "dinov3_convnext_tiny"
@@ -47,22 +45,21 @@ class DinoV3Encoder(nn.Module):
             self.backbone_dim = out.shape[1]
             print(f"DINOv3 output dim: {self.backbone_dim}")
         
-        self.flat_features = self.backbone_dim
+        self.flat_features = self.backbone_dim * cfg.IMG_HIST_LEN
 
     def forward(self, x):
-        # x comes in as (B, 3, H, W) or (B, 1, H, W)
-        
-        if x.shape[1] == 1:
-            x = x.repeat(1, 3, 1, 1)
+        # x comes in as (B, Hist, 3, H, W)
+        B, Hist, C, H, W = x.shape
+        x = x.reshape(B * Hist, C, H, W)
         
         # Resize and Normalize
         x = self.resize(x)
         x = self.normalize(x)
         
         with torch.no_grad():
-            features = self.backbone(x) # (B, Dim)
+            features = self.backbone(x) # (B*Hist, Dim)
             
-        return features
+        return features.reshape(B, -1)
 
 class DinoV3ActorCritic(nn.Module):
     def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
@@ -107,11 +104,11 @@ class SquashedGaussianDinoV3Actor(TorchActorModule):
         speed, gear, rpm, images, act1, act2 = obs
         
         if not cfg.GRAYSCALE:
-            # images: (B, 1, H, W, 3) -> (B, 3, H, W)
-            x = images.squeeze(1).permute(0, 3, 1, 2)
+            # images: (B, Hist, H, W, 3) -> (B, Hist, 3, H, W)
+            x = images.permute(0, 1, 4, 2, 3)
         else:
-            # images: (B, 1, H, W)
-            x = images
+            # images: (B, Hist, H, W) -> (B, Hist, 3, H, W)
+            x = images.unsqueeze(2).repeat(1, 1, 3, 1, 1)
         
         enc_out = self.encoder(x)
         
@@ -164,11 +161,11 @@ class DinoV3QFunction(nn.Module):
         speed, gear, rpm, images, act1, act2 = obs
         
         if not cfg.GRAYSCALE:
-            # images: (B, 1, H, W, 3) -> (B, 3, H, W)
-            x = images.squeeze(1).permute(0, 3, 1, 2)
+            # images: (B, Hist, H, W, 3) -> (B, Hist, 3, H, W)
+            x = images.permute(0, 1, 4, 2, 3)
         else:
-            # images: (B, 1, H, W)
-            x = images
+            # images: (B, Hist, H, W) -> (B, Hist, 3, H, W)
+            x = images.unsqueeze(2).repeat(1, 1, 3, 1, 1)
         
         enc_out = self.encoder(x)
         
