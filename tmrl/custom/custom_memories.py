@@ -64,6 +64,24 @@ def get_local_buffer_sample_tm20_imgs(prev_act, obs, rew, terminated, truncated,
     return prev_act_mod, obs_mod, rew_mod, terminated_mod, truncated_mod, info_mod
 
 
+def get_local_buffer_sample_dinov3(prev_act, obs, rew, terminated, truncated, info):
+    """
+    Sample compressor for MemoryTMDino
+    Input:
+        prev_act: action computed from a previous observation and applied to yield obs in the transition
+        obs, rew, terminated, truncated, info: outcome of the transition
+    """
+    prev_act_mod = prev_act
+    # obs is (speed, gear, rpm, features)
+    # features is (Hist * 768) float32
+    obs_mod = (obs[0], obs[1], obs[2], obs[3]) 
+    rew_mod = rew
+    terminated_mod = terminated
+    truncated_mod = truncated
+    info_mod = info
+    return prev_act_mod, obs_mod, rew_mod, terminated_mod, truncated_mod, info_mod
+
+
 # FUNCTIONS ====================================================
 
 
@@ -528,6 +546,113 @@ class MemoryTMFull(MemoryTM):
         d1 = [b[0] for b in buffer.memory]  # actions
         d2 = [b[1][0] for b in buffer.memory]  # speeds
         d3 = [b[1][3] for b in buffer.memory]  # images
+        d4 = [b[3] or b[4] for b in buffer.memory]  # eoes
+        d5 = [b[2] for b in buffer.memory]  # rewards
+        d6 = [b[5] for b in buffer.memory]  # infos
+        d7 = [b[1][1] for b in buffer.memory]  # gears
+        d8 = [b[1][2] for b in buffer.memory]  # rpms
+        d9 = [b[3] for b in buffer.memory]  # terminated
+        d10 = [b[4] for b in buffer.memory]  # truncated
+
+        if self.__len__() > 0:
+            self.data[0] += d0
+            self.data[1] += d1
+            self.data[2] += d2
+            self.data[3] += d3
+            self.data[4] += d4
+            self.data[5] += d5
+            self.data[6] += d6
+            self.data[7] += d7
+            self.data[8] += d8
+            self.data[9] += d9
+            self.data[10] += d10
+        else:
+            self.data.append(d0)
+            self.data.append(d1)
+            self.data.append(d2)
+            self.data.append(d3)
+            self.data.append(d4)
+            self.data.append(d5)
+            self.data.append(d6)
+            self.data.append(d7)
+            self.data.append(d8)
+            self.data.append(d9)
+            self.data.append(d10)
+
+        to_trim = self.__len__() - self.memory_size
+        if to_trim > 0:
+            self.data[0] = self.data[0][to_trim:]
+            self.data[1] = self.data[1][to_trim:]
+            self.data[2] = self.data[2][to_trim:]
+            self.data[3] = self.data[3][to_trim:]
+            self.data[4] = self.data[4][to_trim:]
+            self.data[5] = self.data[5][to_trim:]
+            self.data[6] = self.data[6][to_trim:]
+            self.data[7] = self.data[7][to_trim:]
+            self.data[8] = self.data[8][to_trim:]
+            self.data[9] = self.data[9][to_trim:]
+            self.data[10] = self.data[10][to_trim:]
+
+        return self
+
+
+class MemoryTMDino(MemoryTM):
+    def get_transition(self, item):
+        """
+        CAUTION: item is the first index of the 4 images in the images history of the OLD observation
+        CAUTION: in the buffer, a sample is (act, obs(act)) and NOT (obs, act(obs))
+            i.e. in a sample, the observation is what step returned after being fed act (and preprocessed)
+            therefore, in the RTRL setting, act is appended to obs
+        """
+        if self.data[4][item + self.min_samples - 1]:
+            if item == 0:  # if first item of the buffer
+                item += 1
+            elif item == self.__len__() - 1:  # if last item of the buffer
+                item -= 1
+            elif random.random() < 0.5:  # otherwise, sample randomly
+                item += 1
+            else:
+                item -= 1
+
+        idx_last = item + self.min_samples - 1
+        idx_now = item + self.min_samples
+
+        acts = self.load_acts(item)
+        last_act_buf = acts[:-1]
+        new_act_buf = acts[1:]
+
+        # For Dino, we don't load a history of images from the buffer, 
+        # because each entry in the buffer ALREADY contains the history of features.
+        # So we just load the entry at idx_last and idx_now.
+        
+        imgs_last_obs = self.data[3][idx_last] # (Hist * 768)
+        imgs_new_obs = self.data[3][idx_now]   # (Hist * 768)
+
+        last_obs = (self.data[2][idx_last], self.data[7][idx_last], self.data[8][idx_last], imgs_last_obs, *last_act_buf)
+        new_act = self.data[1][idx_now]
+        rew = np.float32(self.data[5][idx_now])
+        new_obs = (self.data[2][idx_now], self.data[7][idx_now], self.data[8][idx_now], imgs_new_obs, *new_act_buf)
+        terminated = self.data[9][idx_now]
+        truncated = self.data[10][idx_now]
+        info = self.data[6][idx_now]
+        return last_obs, new_act, rew, new_obs, terminated, truncated, info
+
+    def load_acts(self, item):
+        res = self.data[1][(item + self.start_acts_offset):(item + self.start_acts_offset + self.act_buf_len + 1)]
+        return res
+
+    def append_buffer(self, buffer):
+        """
+        buffer is a list of samples ( act, obs, rew, terminated, truncated, info)
+        don't forget to keep the info dictionary in the sample for CRC debugging
+        """
+
+        first_data_idx = self.data[0][-1] + 1 if self.__len__() > 0 else 0
+
+        d0 = [first_data_idx + i for i, _ in enumerate(buffer.memory)]  # indexes
+        d1 = [b[0] for b in buffer.memory]  # actions
+        d2 = [b[1][0] for b in buffer.memory]  # speeds
+        d3 = [b[1][3] for b in buffer.memory]  # features (images)
         d4 = [b[3] or b[4] for b in buffer.memory]  # eoes
         d5 = [b[2] for b in buffer.memory]  # rewards
         d6 = [b[5] for b in buffer.memory]  # infos
