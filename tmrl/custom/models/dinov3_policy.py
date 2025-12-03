@@ -18,12 +18,23 @@ def mlp(sizes, activation, output_activation=nn.Identity):
     return nn.Sequential(*layers)
 
 class DinoV3FeatureActorCritic(nn.Module):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+    def __init__(self, observation_space, action_space, hidden_sizes=(512, 512, 256, 256), activation=nn.ReLU):
         super().__init__()
-        print("Using DinoV3FeatureActorCritic model (Features Input).")
-        self.actor = SquashedGaussianDinoV3FeatureActor(observation_space, action_space, hidden_sizes, activation)
-        self.q1 = DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation)
-        self.q2 = DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation)
+        print("Using DinoV3FeatureActorCritic model (Features Input) with Shared Projection.")
+        
+        # Shared projection layer: 768 -> 256
+        self.feature_projection = nn.Linear(768, 256)
+        
+        self.actor = SquashedGaussianDinoV3FeatureActor(observation_space, action_space, hidden_sizes, activation, feature_projection=self.feature_projection)
+        self.q1 = DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation, feature_projection=self.feature_projection)
+        self.q2 = DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation, feature_projection=self.feature_projection)
+
+        print("Actor Network Summary:")
+        print(self.actor)
+        print("Q1 Network Summary:")
+        print(self.q1)
+        print("Q2 Network Summary:")
+        print(self.q2)
 
     def act(self, obs, test=False):
         with torch.no_grad():
@@ -31,20 +42,19 @@ class DinoV3FeatureActorCritic(nn.Module):
             return a.squeeze().cpu().numpy()
 
 class SquashedGaussianDinoV3FeatureActor(TorchActorModule):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+    def __init__(self, observation_space, action_space, hidden_sizes=(512, 512, 256, 256), activation=nn.ReLU, feature_projection=None):
         super().__init__(observation_space, action_space)
         dim_act = action_space.shape[0]
         act_limit = action_space.high[0]
         
-        # We assume features are passed, so we don't need encoder.
-        # We need to know feature dim. 
-        # DINOv3 tiny output dim is 384.
-        # Ideally we pass this or infer it.
-        # For now hardcode or use dummy encoder to get dim?
-        # Let's hardcode 768 for convnext_tiny.
-        self.feature_dim = 768 * cfg.IMG_HIST_LEN
+        self.feature_projection = feature_projection
+        if self.feature_projection is None:
+             self.feature_projection = nn.Linear(768, 256)
         
-        self.mlp_input_features = self.feature_dim + 9
+        # Projected dim is 256 * Hist
+        self.projected_dim = 256 * cfg.IMG_HIST_LEN
+        
+        self.mlp_input_features = self.projected_dim + 9
         self.mlp = mlp([self.mlp_input_features] + list(hidden_sizes), activation)
         
         self.mu_layer = nn.Linear(hidden_sizes[-1], dim_act)
@@ -53,10 +63,20 @@ class SquashedGaussianDinoV3FeatureActor(TorchActorModule):
 
     def forward(self, obs, test=False, with_logprob=True):
         speed, gear, rpm, features, act1, act2 = obs
-        # features: (B, Dim)
+        # features: (B, Hist * 768) or (Hist * 768)
         
-        if features.dim() > 2:
-            features = features.flatten(start_dim=1)
+        if features.dim() == 2:
+            B = features.shape[0]
+            features = features.view(B, cfg.IMG_HIST_LEN, 768)
+        elif features.dim() == 1:
+             features = features.view(cfg.IMG_HIST_LEN, 768)
+        
+        features = self.feature_projection(features) # (B, Hist, 256)
+        
+        if features.dim() == 3:
+             features = features.flatten(start_dim=1)
+        elif features.dim() == 2:
+             features = features.flatten()
         
         mlp_in = torch.cat((speed, gear, rpm, features, act1, act2), -1)
         net_out = self.mlp(mlp_in)
@@ -89,18 +109,32 @@ class SquashedGaussianDinoV3FeatureActor(TorchActorModule):
             return a.squeeze().cpu().numpy()
 
 class DinoV3FeatureQFunction(nn.Module):
-    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+    def __init__(self, observation_space, action_space, hidden_sizes=(512, 512, 256, 256), activation=nn.ReLU, feature_projection=None):
         super().__init__()
-        self.feature_dim = 768 * cfg.IMG_HIST_LEN
+        self.feature_projection = feature_projection
+        if self.feature_projection is None:
+             self.feature_projection = nn.Linear(768, 256)
+
+        self.projected_dim = 256 * cfg.IMG_HIST_LEN
         act_dim = action_space.shape[0]
-        self.mlp_input_features = self.feature_dim + 9 + act_dim
+        self.mlp_input_features = self.projected_dim + 9 + act_dim
         self.mlp = mlp([self.mlp_input_features] + list(hidden_sizes) + [1], activation)
 
     def forward(self, obs, act):
         speed, gear, rpm, features, act1, act2 = obs
         
-        if features.dim() > 2:
-            features = features.flatten(start_dim=1)
+        if features.dim() == 2:
+            B = features.shape[0]
+            features = features.view(B, cfg.IMG_HIST_LEN, 768)
+        elif features.dim() == 1:
+             features = features.view(cfg.IMG_HIST_LEN, 768)
+
+        features = self.feature_projection(features)
+
+        if features.dim() == 3:
+             features = features.flatten(start_dim=1)
+        elif features.dim() == 2:
+             features = features.flatten()
 
         mlp_in = torch.cat((speed, gear, rpm, features, act1, act2, act), -1)
         q = self.mlp(mlp_in)
