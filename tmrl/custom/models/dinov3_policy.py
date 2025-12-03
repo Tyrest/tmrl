@@ -17,17 +17,61 @@ def mlp(sizes, activation, output_activation=nn.Identity):
         layers += [nn.Linear(sizes[j], sizes[j + 1]), act()]
     return nn.Sequential(*layers)
 
+class DinoFeatureNet(nn.Module):
+    def __init__(self, input_dim=768, hidden_dim=512, output_dim=256, hist_len=None):
+        super().__init__()
+        self.hist_len = hist_len if hist_len is not None else cfg.IMG_HIST_LEN
+        
+        # Per-frame feature extraction
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim),
+            nn.ReLU()
+        )
+        
+        # Temporal mixing
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.hist_len, output_dim))
+        encoder_layer = nn.TransformerEncoderLayer(d_model=output_dim, nhead=4, dim_feedforward=1024, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        
+        self.output_dim = output_dim
+
+    def forward(self, x):
+        # Handle input shapes
+        # x: (B, Hist * 768) or (Hist * 768)
+        if x.dim() == 2:
+            B = x.shape[0]
+            x = x.view(B, self.hist_len, -1)
+        elif x.dim() == 1:
+             x = x.view(1, self.hist_len, -1)
+             
+        B, H, D = x.shape
+        
+        # Per-frame processing
+        x_flat = x.view(B * H, D)
+        x_emb = self.mlp(x_flat) # (B*H, 256)
+        x_emb = x_emb.view(B, H, -1) # (B, H, 256)
+        
+        # Add positional encoding
+        x_emb = x_emb + self.pos_embed
+        
+        # Transformer
+        x_out = self.transformer(x_emb) # (B, H, 256)
+        
+        return x_out
+
 class DinoV3FeatureActorCritic(nn.Module):
     def __init__(self, observation_space, action_space, hidden_sizes=(512, 512, 256, 256), activation=nn.ReLU):
         super().__init__()
-        print("Using DinoV3FeatureActorCritic model (Features Input) with Shared Projection.")
+        print("Using DinoV3FeatureActorCritic model (Features Input) with Shared FeatureNet (MLP+Transformer).")
         
-        # Shared projection layer: 768 -> 256
-        self.feature_projection = nn.Linear(768, 256)
+        # Shared FeatureNet
+        self.feature_net = DinoFeatureNet()
         
-        self.actor = SquashedGaussianDinoV3FeatureActor(observation_space, action_space, hidden_sizes, activation, feature_projection=self.feature_projection)
-        self.q1 = DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation, feature_projection=self.feature_projection)
-        self.q2 = DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation, feature_projection=self.feature_projection)
+        self.actor = SquashedGaussianDinoV3FeatureActor(observation_space, action_space, hidden_sizes, activation, feature_net=self.feature_net)
+        self.q1 = DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation, feature_net=self.feature_net)
+        self.q2 = DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation, feature_net=self.feature_net)
 
         print("Actor Network Summary:")
         print(self.actor)
@@ -42,14 +86,14 @@ class DinoV3FeatureActorCritic(nn.Module):
             return a.squeeze().cpu().numpy()
 
 class SquashedGaussianDinoV3FeatureActor(TorchActorModule):
-    def __init__(self, observation_space, action_space, hidden_sizes=(512, 512, 256, 256), activation=nn.ReLU, feature_projection=None):
+    def __init__(self, observation_space, action_space, hidden_sizes=(512, 512, 256, 256), activation=nn.ReLU, feature_net=None):
         super().__init__(observation_space, action_space)
         dim_act = action_space.shape[0]
         act_limit = action_space.high[0]
         
-        self.feature_projection = feature_projection
-        if self.feature_projection is None:
-             self.feature_projection = nn.Linear(768, 256)
+        self.feature_net = feature_net
+        if self.feature_net is None:
+             self.feature_net = DinoFeatureNet()
         
         # Projected dim is 256 * Hist
         self.projected_dim = 256 * cfg.IMG_HIST_LEN
@@ -63,16 +107,11 @@ class SquashedGaussianDinoV3FeatureActor(TorchActorModule):
 
     def forward(self, obs, test=False, with_logprob=True):
         speed, gear, rpm, features, act1, act2 = obs
-        # features: (B, Hist * 768) or (Hist * 768)
         
-        if features.dim() == 2:
-            B = features.shape[0]
-            features = features.view(B, cfg.IMG_HIST_LEN, 768)
-        elif features.dim() == 1:
-             features = features.view(cfg.IMG_HIST_LEN, 768)
+        # features processing
+        features = self.feature_net(features) # (B, Hist, 256)
         
-        features = self.feature_projection(features) # (B, Hist, 256)
-        
+        # Flatten
         if features.dim() == 3:
              features = features.flatten(start_dim=1)
         elif features.dim() == 2:
@@ -109,11 +148,11 @@ class SquashedGaussianDinoV3FeatureActor(TorchActorModule):
             return a.squeeze().cpu().numpy()
 
 class DinoV3FeatureQFunction(nn.Module):
-    def __init__(self, observation_space, action_space, hidden_sizes=(512, 512, 256, 256), activation=nn.ReLU, feature_projection=None):
+    def __init__(self, observation_space, action_space, hidden_sizes=(512, 512, 256, 256), activation=nn.ReLU, feature_net=None):
         super().__init__()
-        self.feature_projection = feature_projection
-        if self.feature_projection is None:
-             self.feature_projection = nn.Linear(768, 256)
+        self.feature_net = feature_net
+        if self.feature_net is None:
+             self.feature_net = DinoFeatureNet()
 
         self.projected_dim = 256 * cfg.IMG_HIST_LEN
         act_dim = action_space.shape[0]
@@ -123,14 +162,10 @@ class DinoV3FeatureQFunction(nn.Module):
     def forward(self, obs, act):
         speed, gear, rpm, features, act1, act2 = obs
         
-        if features.dim() == 2:
-            B = features.shape[0]
-            features = features.view(B, cfg.IMG_HIST_LEN, 768)
-        elif features.dim() == 1:
-             features = features.view(cfg.IMG_HIST_LEN, 768)
+        # features processing
+        features = self.feature_net(features) # (B, Hist, 256)
 
-        features = self.feature_projection(features)
-
+        # Flatten
         if features.dim() == 3:
              features = features.flatten(start_dim=1)
         elif features.dim() == 2:

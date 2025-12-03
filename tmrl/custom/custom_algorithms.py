@@ -167,7 +167,7 @@ class SpinupSacAgent(TrainingAgent):  # Adapted from Spinup
 
         # loss_pi:
 
-        # pi, logp_pi = self.model.actor(o)
+        pi, logp_pi = self.model.actor(o)
         q1_pi = self.model.q1(o, pi)
         q2_pi = self.model.q2(o, pi)
         q_pi = torch.min(q1_pi, q2_pi)
@@ -390,6 +390,7 @@ class REDQSACAgent(TrainingAgent):
             for q in self.model.qs:
                 q.requires_grad_(False)
 
+            pi, logp_pi = self.model.actor(o)
             qs_pi = [q(o, pi) for q in self.model.qs]
             qs_pi_cat = torch.stack(qs_pi, -1)
             ave_q = torch.mean(qs_pi_cat, dim=1, keepdim=True)
