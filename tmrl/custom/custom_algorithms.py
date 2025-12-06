@@ -423,3 +423,131 @@ class REDQSACAgent(TrainingAgent):
             ret_dict["entropy_coef"] = alpha_t.item()
 
         return ret_dict
+
+
+# TD3 ==================================================================================================================
+
+@dataclass(eq=0)
+class SpinupTd3Agent(TrainingAgent):
+    observation_space: type
+    action_space: type
+    device: str = None
+    model_cls: type = core.TD3MLPActorCritic
+    gamma: float = 0.99
+    polyak: float = 0.995
+    action_noise: float = 0.1
+    target_noise: float = 0.2
+    noise_clip: float = 0.5
+    policy_delay: int = 2
+    lr_actor: float = 1e-3
+    lr_critic: float = 1e-3
+    optimizer_actor: str = "adam"
+    optimizer_critic: str = "adam"
+    betas_actor: tuple = None
+    betas_critic: tuple = None
+    l2_actor: float = None
+    l2_critic: float = None
+
+    model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
+
+    def __post_init__(self):
+        observation_space, action_space = self.observation_space, self.action_space
+        device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        model = self.model_cls(observation_space, action_space)
+        logging.debug(f" device TD3: {device}")
+        self.model = model.to(device)
+        self.model.actor.action_noise.fill_(self.action_noise)
+        self.model_target = no_grad(deepcopy(self.model))
+
+        self.optimizer_actor = self.optimizer_actor.lower()
+        self.optimizer_critic = self.optimizer_critic.lower()
+        
+        if self.optimizer_actor == "adam":
+            pi_optimizer_cls = Adam
+        elif self.optimizer_actor == "adamw":
+            pi_optimizer_cls = AdamW
+        else:
+            pi_optimizer_cls = SGD
+        pi_optimizer_kwargs = {"lr": self.lr_actor}
+        if self.optimizer_actor in ["adam, adamw"] and self.betas_actor is not None:
+            pi_optimizer_kwargs["betas"] = tuple(self.betas_actor)
+        if self.l2_actor is not None:
+            pi_optimizer_kwargs["weight_decay"] = self.l2_actor
+
+        if self.optimizer_critic == "adam":
+            q_optimizer_cls = Adam
+        elif self.optimizer_critic == "adamw":
+            q_optimizer_cls = AdamW
+        else:
+            q_optimizer_cls = SGD
+        q_optimizer_kwargs = {"lr": self.lr_critic}
+        if self.optimizer_critic in ["adam, adamw"] and self.betas_critic is not None:
+            q_optimizer_kwargs["betas"] = tuple(self.betas_critic)
+        if self.l2_critic is not None:
+            q_optimizer_kwargs["weight_decay"] = self.l2_critic
+
+        self.pi_optimizer = pi_optimizer_cls(self.model.actor.parameters(), **pi_optimizer_kwargs)
+        self.q_optimizer = q_optimizer_cls(itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()), **q_optimizer_kwargs)
+        
+        self.act_limit = action_space.high[0]
+        self.timer = 0
+        self.loss_pi = torch.tensor(0.0)
+
+    def get_actor(self):
+        actor = self.model_nograd.actor
+        actor.action_noise.fill_(self.action_noise)
+        return actor
+
+    def train(self, batch):
+        self.timer += 1
+        o, a, r, o2, d, _ = batch
+
+        # Q-learning update
+        with torch.no_grad():
+            pi_targ, _ = self.model_target.actor(o2)
+            epsilon = torch.randn_like(pi_targ) * self.target_noise
+            epsilon = torch.clamp(epsilon, -self.noise_clip, self.noise_clip)
+            a2 = torch.clamp(pi_targ + epsilon, -self.act_limit, self.act_limit)
+
+            q1_pi_targ = self.model_target.q1(o2, a2)
+            q2_pi_targ = self.model_target.q2(o2, a2)
+            q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
+            backup = r + self.gamma * (1 - d) * q_pi_targ
+
+        q1 = self.model.q1(o, a)
+        q2 = self.model.q2(o, a)
+        loss_q = ((q1 - backup)**2).mean() + ((q2 - backup)**2).mean()
+
+        self.q_optimizer.zero_grad()
+        loss_q.backward()
+        self.q_optimizer.step()
+
+        # Policy update
+        if self.timer % self.policy_delay == 0:
+            for p in self.model.q1.parameters():
+                p.requires_grad = False
+            for p in self.model.q2.parameters():
+                p.requires_grad = False
+
+            pi, _ = self.model.actor(o)
+            loss_pi = -self.model.q1(o, pi).mean()
+            self.loss_pi = loss_pi
+
+            self.pi_optimizer.zero_grad()
+            loss_pi.backward()
+            self.pi_optimizer.step()
+
+            for p in self.model.q1.parameters():
+                p.requires_grad = True
+            for p in self.model.q2.parameters():
+                p.requires_grad = True
+
+            with torch.no_grad():
+                for p, p_targ in zip(self.model.parameters(), self.model_target.parameters()):
+                    p_targ.data.mul_(self.polyak)
+                    p_targ.data.add_((1 - self.polyak) * p.data)
+
+        return dict(
+            loss_actor=self.loss_pi.detach().item(),
+            loss_critic=loss_q.detach().item(),
+        )

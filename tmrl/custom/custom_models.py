@@ -108,6 +108,41 @@ class SquashedGaussianMLPActor(TorchActorModule):
             return res
 
 
+class MLPActor(TorchActorModule):
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+        super().__init__(observation_space, action_space)
+        try:
+            dim_obs = sum(prod(s for s in space.shape) for space in observation_space)
+            self.tuple_obs = True
+        except TypeError:
+            dim_obs = prod(observation_space.shape)
+            self.tuple_obs = False
+        dim_act = action_space.shape[0]
+        act_limit = action_space.high[0]
+        self.net = mlp([dim_obs] + list(hidden_sizes), activation, activation)
+        self.mu_layer = nn.Linear(hidden_sizes[-1], dim_act)
+        self.act_limit = act_limit
+        self.register_buffer("action_noise", torch.tensor(0.0))
+
+    def forward(self, obs, test=False, with_logprob=False):
+        x = torch.cat(obs, -1) if self.tuple_obs else torch.flatten(obs, start_dim=1)
+        net_out = self.net(x)
+        mu = self.mu_layer(net_out)
+        pi_action = torch.tanh(mu) * self.act_limit
+        return pi_action, None
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.forward(obs, test, False)
+            a = a.squeeze().cpu().numpy()
+            if not test and self.action_noise > 0:
+                a += self.action_noise.item() * np.random.randn(*a.shape)
+                a = np.clip(a, -self.act_limit, self.act_limit)
+            if not len(a.shape):
+                a = np.expand_dims(a, 0)
+            return a
+
+
 class MLPQFunction(nn.Module):
     def __init__(self, obs_space, act_space, hidden_sizes=(256, 256), activation=nn.ReLU):
         super().__init__()
@@ -136,6 +171,22 @@ class MLPActorCritic(nn.Module):
 
         # build policy and value functions
         self.actor = SquashedGaussianMLPActor(observation_space, action_space, hidden_sizes, activation)
+        self.q1 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
+        self.q2 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.actor(obs, test, False)
+            res = a.squeeze().cpu().numpy()
+            if not len(res.shape):
+                res = np.expand_dims(res, 0)
+            return res
+
+
+class TD3MLPActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+        super().__init__()
+        self.actor = MLPActor(observation_space, action_space, hidden_sizes, activation)
         self.q1 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
         self.q2 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
 
@@ -459,6 +510,41 @@ class SquashedGaussianEffNetActor(TorchActorModule):
             return a.squeeze().cpu().numpy()
 
 
+class EffNetActor(TorchActorModule):
+    def __init__(self, observation_space, action_space):
+        super().__init__(observation_space, action_space)
+        dim_act = action_space.shape[0]
+        act_limit = action_space.high[0]
+
+        self.cnn = effnetv2_s(nb_channels_in=4, dim_output=247, width_mult=1.).float()
+        self.net = mlp([256, 256], [nn.ReLU, nn.ReLU])
+        self.mu_layer = nn.Linear(256, dim_act)
+        self.act_limit = act_limit
+        self.register_buffer("action_noise", torch.tensor(0.0))
+
+    def forward(self, obs, test=False, with_logprob=False):
+        imgs_tensor = obs[3].float()
+        float_tensors = (obs[0], obs[1], obs[2], *obs[4:])
+        float_tensor = torch.cat(float_tensors, -1).float()
+        cnn_out = self.cnn(imgs_tensor)
+        mlp_in = torch.cat((cnn_out, float_tensor), -1)
+        net_out = self.net(mlp_in)
+        mu = self.mu_layer(net_out)
+        pi_action = torch.tanh(mu) * self.act_limit
+        return pi_action, None
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.forward(obs, test, False)
+            a = a.squeeze().cpu().numpy()
+            if not test and self.action_noise > 0:
+                a += self.action_noise.item() * np.random.randn(*a.shape)
+                a = np.clip(a, -self.act_limit, self.act_limit)
+            if not len(a.shape):
+                a = np.expand_dims(a, 0)
+            return a
+
+
 class EffNetQFunction(nn.Module):
     def __init__(self, obs_space, act_space, hidden_sizes=(256, 256), activation=nn.ReLU):
         super().__init__()
@@ -484,6 +570,19 @@ class EffNetActorCritic(nn.Module):
         self.actor = SquashedGaussianMLPActor(observation_space, action_space, hidden_sizes, activation)
         self.q1 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
         self.q2 = MLPQFunction(observation_space, action_space, hidden_sizes, activation)
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.actor(obs, test, False)
+            return a.squeeze().cpu().numpy()
+
+
+class TD3EffNetActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
+        super().__init__()
+        self.actor = EffNetActor(observation_space, action_space)
+        self.q1 = EffNetQFunction(observation_space, action_space, hidden_sizes, activation)
+        self.q2 = EffNetQFunction(observation_space, action_space, hidden_sizes, activation)
 
     def act(self, obs, test=False):
         with torch.no_grad():
@@ -596,6 +695,34 @@ class SquashedGaussianVanillaCNNActor(TorchActorModule):
             return a.squeeze().cpu().numpy()
 
 
+class VanillaCNNActor(TorchActorModule):
+    def __init__(self, observation_space, action_space):
+        super().__init__(observation_space, action_space)
+        dim_act = action_space.shape[0]
+        act_limit = action_space.high[0]
+        self.net = VanillaCNN(q_net=False)
+        self.mu_layer = nn.Linear(256, dim_act)
+        self.act_limit = act_limit
+        self.register_buffer("action_noise", torch.tensor(0.0))
+
+    def forward(self, obs, test=False, with_logprob=False):
+        net_out = self.net(obs)
+        mu = self.mu_layer(net_out)
+        pi_action = torch.tanh(mu) * self.act_limit
+        return pi_action, None
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.forward(obs, test, False)
+            a = a.squeeze().cpu().numpy()
+            if not test and self.action_noise > 0:
+                a += self.action_noise.item() * np.random.randn(*a.shape)
+                a = np.clip(a, -self.act_limit, self.act_limit)
+            if not len(a.shape):
+                a = np.expand_dims(a, 0)
+            return a
+
+
 class VanillaCNNQFunction(nn.Module):
     def __init__(self, observation_space, action_space):
         super().__init__()
@@ -613,6 +740,19 @@ class VanillaCNNActorCritic(nn.Module):
 
         # build policy and value functions
         self.actor = SquashedGaussianVanillaCNNActor(observation_space, action_space)
+        self.q1 = VanillaCNNQFunction(observation_space, action_space)
+        self.q2 = VanillaCNNQFunction(observation_space, action_space)
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.actor(obs, test, False)
+            return a.squeeze().cpu().numpy()
+
+
+class TD3VanillaCNNActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space):
+        super().__init__()
+        self.actor = VanillaCNNActor(observation_space, action_space)
         self.q1 = VanillaCNNQFunction(observation_space, action_space)
         self.q2 = VanillaCNNQFunction(observation_space, action_space)
 
@@ -659,6 +799,14 @@ class SquashedGaussianVanillaColorCNNActor(SquashedGaussianVanillaCNNActor):
         return super().forward(obs, test=False, with_logprob=True)
 
 
+class VanillaColorCNNActor(VanillaCNNActor):
+    def forward(self, obs, test=False, with_logprob=False):
+        speed, gear, rpm, images, act1, act2 = obs
+        images = remove_colors(images)
+        obs = (speed, gear, rpm, images, act1, act2)
+        return super().forward(obs, test=False, with_logprob=False)
+
+
 class VanillaColorCNNQFunction(VanillaCNNQFunction):
     def forward(self, obs, act):
         speed, gear, rpm, images, act1, act2 = obs
@@ -673,6 +821,14 @@ class VanillaColorCNNActorCritic(VanillaCNNActorCritic):
 
         # build policy and value functions
         self.actor = SquashedGaussianVanillaColorCNNActor(observation_space, action_space)
+        self.q1 = VanillaColorCNNQFunction(observation_space, action_space)
+        self.q2 = VanillaColorCNNQFunction(observation_space, action_space)
+
+
+class TD3VanillaColorCNNActorCritic(TD3VanillaCNNActorCritic):
+    def __init__(self, observation_space, action_space):
+        super().__init__(observation_space, action_space)
+        self.actor = VanillaColorCNNActor(observation_space, action_space)
         self.q1 = VanillaColorCNNQFunction(observation_space, action_space)
         self.q2 = VanillaColorCNNQFunction(observation_space, action_space)
 

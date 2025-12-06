@@ -11,19 +11,20 @@ from tmrl.custom.tm.tm_gym_interfaces import TM2020Interface, TM2020InterfaceLid
 from tmrl.custom.custom_memories import MemoryTMFull, MemoryTMLidar, MemoryTMLidarProgress, get_local_buffer_sample_lidar, get_local_buffer_sample_lidar_progress, get_local_buffer_sample_tm20_imgs, MemoryTMDino, get_local_buffer_sample_dinov3
 from tmrl.custom.tm.tm_preprocessors import obs_preprocessor_tm_act_in_obs, obs_preprocessor_tm_lidar_act_in_obs, obs_preprocessor_tm_lidar_progress_act_in_obs
 from tmrl.envs import GenericGymEnv
-from tmrl.custom.custom_models import SquashedGaussianMLPActor, MLPActorCritic, REDQMLPActorCritic, RNNActorCritic, SquashedGaussianRNNActor, SquashedGaussianVanillaCNNActor, VanillaCNNActorCritic, SquashedGaussianVanillaColorCNNActor, VanillaColorCNNActorCritic, REDQVanillaCNNActorCritic, REDQVanillaColorCNNActorCritic
+from tmrl.custom.custom_models import SquashedGaussianMLPActor, MLPActorCritic, REDQMLPActorCritic, RNNActorCritic, SquashedGaussianRNNActor, SquashedGaussianVanillaCNNActor, VanillaCNNActorCritic, SquashedGaussianVanillaColorCNNActor, VanillaColorCNNActorCritic, REDQVanillaCNNActorCritic, REDQVanillaColorCNNActorCritic, MLPActor, TD3MLPActorCritic, VanillaCNNActor, TD3VanillaCNNActorCritic, VanillaColorCNNActor, TD3VanillaColorCNNActorCritic
 from tmrl.custom.models.impoola import ImpoolaCNNActorCritic, SquashedGaussianImpoolaCNNActor, REDQImpoolaCNNActorCritic
 from tmrl.custom.models.dinov3_policy import DinoV3FeatureActorCritic, SquashedGaussianDinoV3FeatureActor, REDQDinoV3FeatureActorCritic
 from tmrl.custom.utils.dinov3_preprocessor import DinoV3Preprocessor
 from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
 from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
+from tmrl.custom.custom_algorithms import SpinupTd3Agent as TD3_Agent
 from tmrl.custom.custom_checkpoints import update_run_instance
 from tmrl.util import partial
 
 
 ALG_CONFIG = cfg.TMRL_CONFIG["ALG"]
 ALG_NAME = ALG_CONFIG["ALGORITHM"]
-assert ALG_NAME in ["SAC", "REDQSAC"], f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
+assert ALG_NAME in ["SAC", "REDQSAC", "TD3"], f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
 
 
 # MODEL, GYM ENVIRONMENT, REPLAY MEMORY AND TRAINING: ===========
@@ -34,19 +35,58 @@ if cfg.PRAGMA_LIDAR:
         TRAIN_MODEL = RNNActorCritic
         POLICY = SquashedGaussianRNNActor
     else:
-        TRAIN_MODEL = MLPActorCritic if ALG_NAME == "SAC" else REDQMLPActorCritic
-        POLICY = SquashedGaussianMLPActor
+        if ALG_NAME == "SAC":
+            TRAIN_MODEL = MLPActorCritic
+            POLICY = SquashedGaussianMLPActor
+        elif ALG_NAME == "REDQSAC":
+            TRAIN_MODEL = REDQMLPActorCritic
+            POLICY = SquashedGaussianMLPActor
+        else:  # TD3
+            TRAIN_MODEL = TD3MLPActorCritic
+            POLICY = MLPActor
 else:
     assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
     if cfg.MODEL_ARCH == "impoola":
-        TRAIN_MODEL = ImpoolaCNNActorCritic if ALG_NAME == "SAC" else REDQImpoolaCNNActorCritic
-        POLICY = SquashedGaussianImpoolaCNNActor
+        if ALG_NAME == "SAC":
+            TRAIN_MODEL = ImpoolaCNNActorCritic
+            POLICY = SquashedGaussianImpoolaCNNActor
+        elif ALG_NAME == "REDQSAC":
+            TRAIN_MODEL = REDQImpoolaCNNActorCritic
+            POLICY = SquashedGaussianImpoolaCNNActor
+        else:  # TD3
+            # Not implemented yet for Impoola
+            raise NotImplementedError("TD3 not implemented for Impoola yet")
     elif cfg.MODEL_ARCH == "dinov3":
-        TRAIN_MODEL = DinoV3FeatureActorCritic if ALG_NAME == "SAC" else REDQDinoV3FeatureActorCritic
-        POLICY = SquashedGaussianDinoV3FeatureActor
+        if ALG_NAME == "SAC":
+            TRAIN_MODEL = DinoV3FeatureActorCritic
+            POLICY = SquashedGaussianDinoV3FeatureActor
+        elif ALG_NAME == "REDQSAC":
+            TRAIN_MODEL = REDQDinoV3FeatureActorCritic
+            POLICY = SquashedGaussianDinoV3FeatureActor
+        else:  # TD3
+            # Not implemented yet for DinoV3
+            raise NotImplementedError("TD3 not implemented for DinoV3 yet")
     elif cfg.MODEL_ARCH == "vanilla":
-        TRAIN_MODEL = (VanillaCNNActorCritic if ALG_NAME == "SAC" else REDQVanillaCNNActorCritic) if cfg.GRAYSCALE else (VanillaColorCNNActorCritic if ALG_NAME == "SAC" else REDQVanillaColorCNNActorCritic)
-        POLICY = SquashedGaussianVanillaCNNActor if cfg.GRAYSCALE else SquashedGaussianVanillaColorCNNActor
+        if cfg.GRAYSCALE:
+            if ALG_NAME == "SAC":
+                TRAIN_MODEL = VanillaCNNActorCritic
+                POLICY = SquashedGaussianVanillaCNNActor
+            elif ALG_NAME == "REDQSAC":
+                TRAIN_MODEL = REDQVanillaCNNActorCritic
+                POLICY = SquashedGaussianVanillaCNNActor
+            else:  # TD3
+                TRAIN_MODEL = TD3VanillaCNNActorCritic
+                POLICY = VanillaCNNActor
+        else:
+            if ALG_NAME == "SAC":
+                TRAIN_MODEL = VanillaColorCNNActorCritic
+                POLICY = SquashedGaussianVanillaColorCNNActor
+            elif ALG_NAME == "REDQSAC":
+                TRAIN_MODEL = REDQVanillaColorCNNActorCritic
+                POLICY = SquashedGaussianVanillaColorCNNActor
+            else:  # TD3
+                TRAIN_MODEL = TD3VanillaColorCNNActorCritic
+                POLICY = VanillaColorCNNActor
     else:
         raise ValueError(f"Unknown model architecture: {cfg.MODEL_ARCH}")
 
@@ -141,6 +181,26 @@ if ALG_NAME == "SAC":
         l2_actor=ALG_CONFIG["L2_ACTOR"] if "L2_ACTOR" in ALG_CONFIG else None,
         l2_critic=ALG_CONFIG["L2_CRITIC"] if "L2_CRITIC" in ALG_CONFIG else None
     )
+elif ALG_NAME == "TD3":
+    AGENT = partial(
+        TD3_Agent,
+        device='cuda' if cfg.CUDA_TRAINING else 'cpu',
+        model_cls=TRAIN_MODEL,
+        lr_actor=ALG_CONFIG["LR_ACTOR"],
+        lr_critic=ALG_CONFIG["LR_CRITIC"],
+        gamma=ALG_CONFIG["GAMMA"],
+        polyak=ALG_CONFIG["POLYAK"],
+        action_noise=ALG_CONFIG["ACTION_NOISE"],
+        target_noise=ALG_CONFIG["TARGET_NOISE"],
+        noise_clip=ALG_CONFIG["NOISE_CLIP"],
+        policy_delay=ALG_CONFIG["POLICY_DELAY"],
+        optimizer_actor=ALG_CONFIG["OPTIMIZER_ACTOR"],
+        optimizer_critic=ALG_CONFIG["OPTIMIZER_CRITIC"],
+        betas_actor=ALG_CONFIG["BETAS_ACTOR"] if "BETAS_ACTOR" in ALG_CONFIG else None,
+        betas_critic=ALG_CONFIG["BETAS_CRITIC"] if "BETAS_CRITIC" in ALG_CONFIG else None,
+        l2_actor=ALG_CONFIG["L2_ACTOR"] if "L2_ACTOR" in ALG_CONFIG else None,
+        l2_critic=ALG_CONFIG["L2_CRITIC"] if "L2_CRITIC" in ALG_CONFIG else None
+    )
 else:
     AGENT = partial(
         REDQ_Agent,
@@ -207,4 +267,4 @@ else:  # images
 
 DUMP_RUN_INSTANCE_FN = None if cfg.PRAGMA_LIDAR else None  # dump_run_instance_images_dataset
 LOAD_RUN_INSTANCE_FN = None if cfg.PRAGMA_LIDAR else None  # load_run_instance_images_dataset
-UPDATER_FN = update_run_instance if ALG_NAME in ["SAC", "REDQSAC"] else None
+UPDATER_FN = update_run_instance if ALG_NAME in ["SAC", "REDQSAC", "TD3"] else None

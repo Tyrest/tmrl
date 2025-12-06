@@ -61,7 +61,7 @@ SERVER_IP_FOR_TRAINER = PUBLIC_IP_SERVER if not LOCALHOST_TRAINER else "127.0.0.
 
 ALG_CONFIG = TMRL_CONFIG["ALG"]
 ALG_NAME = ALG_CONFIG["ALGORITHM"]
-assert ALG_NAME in ["SAC", "REDQSAC"], f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
+assert ALG_NAME in ["SAC", "REDQSAC", "TD3"], f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
 
 # ENVIRONMENT: =======================================================
 
