@@ -423,3 +423,148 @@ class REDQSACAgent(TrainingAgent):
             ret_dict["entropy_coef"] = alpha_t.item()
 
         return ret_dict
+
+
+# TQC ==================================================================================================================
+
+
+def quantile_huber_loss_f(quantiles, target_quantiles):
+    pairwise_delta = target_quantiles.unsqueeze(2) - quantiles.unsqueeze(1)
+    abs_pairwise_delta = torch.abs(pairwise_delta)
+    huber_loss = torch.where(abs_pairwise_delta > 1, abs_pairwise_delta - 0.5, pairwise_delta**2 * 0.5)
+
+    n_quantiles = quantiles.shape[1]
+    tau = torch.arange(n_quantiles, device=quantiles.device).float() / n_quantiles + 1 / (2 * n_quantiles)
+    loss = (torch.abs(tau.unsqueeze(0).unsqueeze(0) - (pairwise_delta.detach() < 0).float()) * huber_loss).mean()
+    return loss
+
+
+@dataclass(eq=0)
+class TQCAgent(TrainingAgent):
+    observation_space: type
+    action_space: type
+    device: str = None
+    model_cls: type = core.TQCMLPActorCritic
+    gamma: float = 0.99
+    polyak: float = 0.995
+    alpha: float = 0.2
+    lr_actor: float = 3e-4
+    lr_critic: float = 3e-4
+    lr_entropy: float = 3e-4
+    learn_entropy_coef: bool = True
+    target_entropy: float = None
+    top_quantiles_to_drop_per_net: int = 2
+    n_quantiles: int = 25
+    n_nets: int = 5
+
+    model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
+
+    def __post_init__(self):
+        observation_space, action_space = self.observation_space, self.action_space
+        device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        model = self.model_cls(observation_space, action_space, n_quantiles=self.n_quantiles, n_nets=self.n_nets)
+        logging.debug(f" device TQC: {device}")
+        self.model = model.to(device)
+        self.model_target = no_grad(deepcopy(self.model))
+
+        self.pi_optimizer = Adam(self.model.actor.parameters(), lr=self.lr_actor)
+        self.q_optimizer_list = [Adam(q.parameters(), lr=self.lr_critic) for q in self.model.qs]
+
+        self.quantiles_total = self.n_quantiles * self.n_nets
+        self.top_quantiles_to_drop = self.top_quantiles_to_drop_per_net * self.n_nets
+
+        if self.target_entropy is None:
+            self.target_entropy = -np.prod(action_space.shape)
+        else:
+            self.target_entropy = float(self.target_entropy)
+
+        if self.learn_entropy_coef:
+            self.log_alpha = torch.log(torch.ones(1, device=self.device) * self.alpha).requires_grad_(True)
+            self.alpha_optimizer = Adam([self.log_alpha], lr=self.lr_entropy)
+        else:
+            self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
+
+    def get_actor(self):
+        return self.model_nograd.actor
+
+    def train(self, batch):
+        o, a, r, o2, d, _ = batch
+
+        # Alpha
+        pi, logp_pi = self.model.actor(o)
+        loss_alpha = None
+        if self.learn_entropy_coef:
+            alpha_t = torch.exp(self.log_alpha.detach())
+            loss_alpha = -(self.log_alpha * (logp_pi + self.target_entropy).detach()).mean()
+        else:
+            alpha_t = self.alpha_t
+
+        if loss_alpha is not None:
+            self.alpha_optimizer.zero_grad()
+            loss_alpha.backward()
+            self.alpha_optimizer.step()
+
+        # Critic
+        with torch.no_grad():
+            a2, logp_a2 = self.model.actor(o2)
+
+            # Target quantiles
+            target_quantiles_list = [q(o2, a2) for q in self.model_target.qs]
+            target_quantiles = torch.cat(target_quantiles_list, dim=1)
+            target_quantiles, _ = torch.sort(target_quantiles, dim=1)
+            target_quantiles = target_quantiles[:, :self.quantiles_total - self.top_quantiles_to_drop]
+
+            # Target value
+            target = r.unsqueeze(-1) + self.gamma * (1 - d.unsqueeze(-1)) * (target_quantiles - alpha_t * logp_a2.unsqueeze(-1))
+
+        current_quantiles_list = [q(o, a) for q in self.model.qs]
+
+        loss_q = 0
+        for current_quantiles in current_quantiles_list:
+            loss_q += quantile_huber_loss_f(current_quantiles, target)
+
+        for q_opt in self.q_optimizer_list:
+            q_opt.zero_grad()
+        loss_q.backward()
+        for q_opt in self.q_optimizer_list:
+            q_opt.step()
+
+        # Actor
+        # Freeze Q-networks
+        for q in self.model.qs:
+            q.requires_grad_(False)
+
+        # Re-run actor to get current policy actions
+        pi, logp_pi = self.model.actor(o)
+
+        # Critic evaluation for actor loss
+        current_quantiles_list_pi = [q(o, pi) for q in self.model.qs]
+        current_quantiles_pi = torch.cat(current_quantiles_list_pi, dim=1)
+        q_pi = torch.mean(current_quantiles_pi, dim=1)  # Mean over all quantiles
+
+        loss_pi = (alpha_t * logp_pi - q_pi).mean()
+
+        self.pi_optimizer.zero_grad()
+        loss_pi.backward()
+        self.pi_optimizer.step()
+
+        # Unfreeze Q-networks
+        for q in self.model.qs:
+            q.requires_grad_(True)
+
+        # Polyak averaging
+        with torch.no_grad():
+            for p, p_targ in zip(self.model.parameters(), self.model_target.parameters()):
+                p_targ.data.mul_(self.polyak)
+                p_targ.data.add_((1 - self.polyak) * p.data)
+
+        ret_dict = dict(
+            loss_actor=loss_pi.detach().item(),
+            loss_critic=loss_q.detach().item(),
+        )
+
+        if self.learn_entropy_coef:
+            ret_dict["loss_entropy_coef"] = loss_alpha.detach().item()
+            ret_dict["entropy_coef"] = alpha_t.item()
+
+        return ret_dict

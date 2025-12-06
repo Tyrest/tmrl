@@ -175,6 +175,45 @@ class REDQMLPActorCritic(nn.Module):
             return a.squeeze().cpu().numpy()
 
 
+# TQC MLP: ======================================================
+
+
+class MLPQuantileFunction(nn.Module):
+    def __init__(self, obs_space, act_space, hidden_sizes=(256, 256), activation=nn.ReLU, n_quantiles=25):
+        super().__init__()
+        try:
+            dim_obs = sum(prod(s for s in space.shape) for space in obs_space)
+            self.tuple_obs = True
+        except TypeError:
+            dim_obs = prod(obs_space.shape)
+            self.tuple_obs = False
+        dim_act = act_space.shape[0]
+        self.net = mlp([dim_obs + dim_act] + list(hidden_sizes) + [n_quantiles], activation)
+
+    def forward(self, obs, act):
+        x = torch.cat(obs, -1) if self.tuple_obs else torch.flatten(obs, start_dim=1)
+        q = self.net(torch.cat([x, act], dim=-1))
+        return q
+
+
+class TQCMLPActorCritic(nn.Module):
+    def __init__(self,
+                 observation_space,
+                 action_space,
+                 hidden_sizes=(256, 256),
+                 activation=nn.ReLU,
+                 n_quantiles=25,
+                 n_nets=5):
+        super().__init__()
+        self.actor = SquashedGaussianMLPActor(observation_space, action_space, hidden_sizes, activation)
+        self.qs = nn.ModuleList([MLPQuantileFunction(observation_space, action_space, hidden_sizes, activation, n_quantiles) for _ in range(n_nets)])
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.actor(obs, test, False)
+            return a.cpu().numpy()
+
+
 # CNNs: ================================================================================================================
 
 # EfficientNet =========================================================================================================
@@ -662,165 +701,84 @@ class VanillaColorCNNActorCritic(VanillaCNNActorCritic):
         self.q2 = VanillaColorCNNQFunction(observation_space, action_space)
 
 
-# UNSUPPORTED ==========================================================================================================
+# TQC Vanilla CNN: =====================================================================================================
 
 
-# RNN: ==========================================================
+class VanillaCNNQuantile(Module):
+    def __init__(self, q_net, n_quantiles=25):
+        super(VanillaCNNQuantile, self).__init__()
+        self.q_net = q_net
+        self.h_out, self.w_out = cfg.IMG_HEIGHT, cfg.IMG_WIDTH
+        hist = cfg.IMG_HIST_LEN
+
+        self.conv1 = Conv2d(hist, 64, 8, stride=2)
+        self.h_out, self.w_out = conv2d_out_dims(self.conv1, self.h_out, self.w_out)
+        self.conv2 = Conv2d(64, 64, 4, stride=2)
+        self.h_out, self.w_out = conv2d_out_dims(self.conv2, self.h_out, self.w_out)
+        self.conv3 = Conv2d(64, 128, 4, stride=2)
+        self.h_out, self.w_out = conv2d_out_dims(self.conv3, self.h_out, self.w_out)
+        self.conv4 = Conv2d(128, 128, 4, stride=2)
+        self.h_out, self.w_out = conv2d_out_dims(self.conv4, self.h_out, self.w_out)
+        self.out_channels = self.conv4.out_channels
+        self.flat_features = self.out_channels * self.h_out * self.w_out
+        self.mlp_input_features = self.flat_features + 12 if self.q_net else self.flat_features + 9
+        self.mlp_layers = [256, 256, n_quantiles] if self.q_net else [256, 256]
+        self.mlp = mlp([self.mlp_input_features] + self.mlp_layers, nn.ReLU)
+
+    def forward(self, x):
+        if self.q_net:
+            speed, gear, rpm, images, act1, act2, act = x
+        else:
+            speed, gear, rpm, images, act1, act2 = x
+
+        x = F.relu(self.conv1(images))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        flat_features = num_flat_features(x)
+        assert flat_features == self.flat_features, f"x.shape:{x.shape}, flat_features:{flat_features}, self.out_channels:{self.out_channels}, self.h_out:{self.h_out}, self.w_out:{self.w_out}"
+        x = x.view(-1, flat_features)
+        if self.q_net:
+            x = torch.cat((speed, gear, rpm, x, act1, act2, act), -1)
+        else:
+            x = torch.cat((speed, gear, rpm, x, act1, act2), -1)
+        x = self.mlp(x)
+        return x
 
 
-def rnn(input_size, rnn_size, rnn_len):
-    """
-    sizes is ignored for now, expect first values and length
-    """
-    num_rnn_layers = rnn_len
-    assert num_rnn_layers >= 1
-    hidden_size = rnn_size
-
-    gru = nn.GRU(input_size=input_size, hidden_size=hidden_size, num_layers=num_rnn_layers, bias=True, batch_first=True, dropout=0, bidirectional=False)
-    return gru
-
-
-class SquashedGaussianRNNActor(nn.Module):
-    def __init__(self, obs_space, act_space, rnn_size=100, rnn_len=2, mlp_sizes=(100, 100), activation=nn.ReLU):
+class VanillaCNNQuantileFunction(nn.Module):
+    def __init__(self, observation_space, action_space, n_quantiles=25):
         super().__init__()
-        dim_obs = sum(prod(s for s in space.shape) for space in obs_space)
-        dim_act = act_space.shape[0]
-        act_limit = act_space.high[0]
-        self.rnn = rnn(dim_obs, rnn_size, rnn_len)
-        self.mlp = mlp([rnn_size] + list(mlp_sizes), activation, activation)
-        self.mu_layer = nn.Linear(mlp_sizes[-1], dim_act)
-        self.log_std_layer = nn.Linear(mlp_sizes[-1], dim_act)
-        self.act_limit = act_limit
-        self.h = None
-        self.rnn_size = rnn_size
-        self.rnn_len = rnn_len
+        self.net = VanillaCNNQuantile(q_net=True, n_quantiles=n_quantiles)
 
-    def forward(self, obs_seq, test=False, with_logprob=True, save_hidden=False):
-        """
-        obs: observation
-        h: hidden state
-        Returns:
-            pi_action, log_pi, h
-        """
-        self.rnn.flatten_parameters()
+    def forward(self, obs, act):
+        x = (*obs, act)
+        q = self.net(x)
+        return q
 
-        # sequence_len = obs_seq[0].shape[0]
-        batch_size = obs_seq[0].shape[0]
 
-        if not save_hidden or self.h is None:
-            device = obs_seq[0].device
-            h = torch.zeros((self.rnn_len, batch_size, self.rnn_size), device=device)
-        else:
-            h = self.h
-
-        obs_seq_cat = torch.cat(obs_seq, -1)
-        net_out, h = self.rnn(obs_seq_cat, h)
-        net_out = net_out[:, -1]
-        net_out = self.mlp(net_out)
-        mu = self.mu_layer(net_out)
-        log_std = self.log_std_layer(net_out)
-        log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
-        std = torch.exp(log_std)
-
-        # Pre-squash distribution and sample
-        pi_distribution = Normal(mu, std)
-        if test:
-            # Only used for evaluating policy at test time.
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
-
-        if with_logprob:
-            # Compute logprob from Gaussian, and then apply correction for Tanh squashing.
-            # NOTE: The correction formula is a little bit magic. To get an understanding
-            # of where it comes from, check out the original SAC paper (arXiv 1801.01290)
-            # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
-            # Try deriving it yourself as a (very difficult) exercise. :)
-            logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(axis=1)
-        else:
-            logp_pi = None
-
-        pi_action = torch.tanh(pi_action)
-        pi_action = self.act_limit * pi_action
-
-        pi_action = pi_action.squeeze()
-
-        if save_hidden:
-            self.h = h
-
-        return pi_action, logp_pi
+class TQCVanillaCNNActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space, n_quantiles=25, n_nets=5):
+        super().__init__()
+        self.actor = SquashedGaussianVanillaCNNActor(observation_space, action_space)
+        self.qs = nn.ModuleList([VanillaCNNQuantileFunction(observation_space, action_space, n_quantiles) for _ in range(n_nets)])
 
     def act(self, obs, test=False):
-        obs_seq = tuple(o.view(1, *o.shape) for o in obs)  # artificially add sequence dimension
         with torch.no_grad():
-            a, _ = self.forward(obs_seq=obs_seq, test=test, with_logprob=False, save_hidden=True)
+            a, _ = self.actor(obs, test, False)
             return a.squeeze().cpu().numpy()
 
 
-class RNNQFunction(nn.Module):
-    """
-    The action is merged in the latent space after the RNN
-    """
-    def __init__(self, obs_space, act_space, rnn_size=100, rnn_len=2, mlp_sizes=(100, 100), activation=nn.ReLU):
-        super().__init__()
-        dim_obs = sum(prod(s for s in space.shape) for space in obs_space)
-        dim_act = act_space.shape[0]
-        self.rnn = rnn(dim_obs, rnn_size, rnn_len)
-        self.mlp = mlp([rnn_size + dim_act] + list(mlp_sizes) + [1], activation)
-        self.h = None
-        self.rnn_size = rnn_size
-        self.rnn_len = rnn_len
-
-    def forward(self, obs_seq, act, save_hidden=False):
-        """
-        obs: observation
-        h: hidden state
-        Returns:
-            pi_action, log_pi, h
-        """
-        self.rnn.flatten_parameters()
-
-        # sequence_len = obs_seq[0].shape[0]
-        batch_size = obs_seq[0].shape[0]
-
-        if not save_hidden or self.h is None:
-            device = obs_seq[0].device
-            h = torch.zeros((self.rnn_len, batch_size, self.rnn_size), device=device)
-        else:
-            h = self.h
-
-        # logging.debug(f"len(obs_seq):{len(obs_seq)}")
-        # logging.debug(f"obs_seq[0].shape:{obs_seq[0].shape}")
-        # logging.debug(f"obs_seq[1].shape:{obs_seq[1].shape}")
-        # logging.debug(f"obs_seq[2].shape:{obs_seq[2].shape}")
-        # logging.debug(f"obs_seq[3].shape:{obs_seq[3].shape}")
-
-        obs_seq_cat = torch.cat(obs_seq, -1)
-
-        # logging.debug(f"obs_seq_cat.shape:{obs_seq_cat.shape}")
-
-        net_out, h = self.rnn(obs_seq_cat, h)
-        # logging.debug(f"1 net_out.shape:{net_out.shape}")
-        net_out = net_out[:, -1]
-        # logging.debug(f"2 net_out.shape:{net_out.shape}")
-        net_out = torch.cat((net_out, act), -1)
-        # logging.debug(f"3 net_out.shape:{net_out.shape}")
-        q = self.mlp(net_out)
-
-        if save_hidden:
-            self.h = h
-
-        return torch.squeeze(q, -1)  # Critical to ensure q has right shape.
+class VanillaColorCNNQuantileFunction(VanillaCNNQuantileFunction):
+    def forward(self, obs, act):
+        speed, gear, rpm, images, act1, act2 = obs
+        images = remove_colors(images)
+        obs = (speed, gear, rpm, images, act1, act2)
+        return super().forward(obs, act)
 
 
-class RNNActorCritic(nn.Module):
-    def __init__(self, observation_space, action_space, rnn_size=100, rnn_len=2, mlp_sizes=(100, 100), activation=nn.ReLU):
-        super().__init__()
-
-        act_limit = action_space.high[0]
-
-        # build policy and value functions
-        self.actor = SquashedGaussianRNNActor(observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation)
-        self.q1 = RNNQFunction(observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation)
-        self.q2 = RNNQFunction(observation_space, action_space, rnn_size, rnn_len, mlp_sizes, activation)
+class TQCVanillaColorCNNActorCritic(TQCVanillaCNNActorCritic):
+    def __init__(self, observation_space, action_space, n_quantiles=25, n_nets=5):
+        super().__init__(observation_space, action_space, n_quantiles, n_nets)
+        self.actor = SquashedGaussianVanillaColorCNNActor(observation_space, action_space)
+        self.qs = nn.ModuleList([VanillaColorCNNQuantileFunction(observation_space, action_space, n_quantiles) for _ in range(n_nets)])
