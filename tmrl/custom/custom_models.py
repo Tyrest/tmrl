@@ -622,6 +622,21 @@ class VanillaCNNActorCritic(nn.Module):
             return a.squeeze().cpu().numpy()
 
 
+class REDQVanillaCNNActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU, n=10):
+        super().__init__()
+
+        # build policy and value functions
+        self.actor = SquashedGaussianVanillaCNNActor(observation_space, action_space)
+        self.n = n
+        self.qs = ModuleList([VanillaCNNQFunction(observation_space, action_space) for _ in range(self.n)])
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.actor(obs, test, False)
+            return a.squeeze().cpu().numpy()
+
+
 # Vanilla CNN FOR COLOR IMAGES: ========================================================================================
 
 def remove_colors(images):
@@ -660,6 +675,16 @@ class VanillaColorCNNActorCritic(VanillaCNNActorCritic):
         self.actor = SquashedGaussianVanillaColorCNNActor(observation_space, action_space)
         self.q1 = VanillaColorCNNQFunction(observation_space, action_space)
         self.q2 = VanillaColorCNNQFunction(observation_space, action_space)
+
+
+class REDQVanillaColorCNNActorCritic(REDQVanillaCNNActorCritic):
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU, n=10):
+        super().__init__(observation_space, action_space, hidden_sizes, activation, n)
+
+        # build policy and value functions
+        self.actor = SquashedGaussianVanillaColorCNNActor(observation_space, action_space)
+        self.n = n
+        self.qs = ModuleList([VanillaColorCNNQFunction(observation_space, action_space) for _ in range(self.n)])
 
 
 # UNSUPPORTED ==========================================================================================================

@@ -30,6 +30,21 @@ class DinoV3FeatureActorCritic(nn.Module):
             a, _ = self.actor(obs, test, False)
             return a.squeeze().cpu().numpy()
 
+
+class REDQDinoV3FeatureActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU, n=10):
+        super().__init__()
+        print("Using REDQDinoV3FeatureActorCritic model (Features Input).")
+        self.actor = SquashedGaussianDinoV3FeatureActor(observation_space, action_space, hidden_sizes, activation)
+        self.n = n
+        self.qs = nn.ModuleList([DinoV3FeatureQFunction(observation_space, action_space, hidden_sizes, activation) for _ in range(self.n)])
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.actor(obs, test, False)
+            return a.squeeze().cpu().numpy()
+
+
 class SquashedGaussianDinoV3FeatureActor(TorchActorModule):
     def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
         super().__init__(observation_space, action_space)

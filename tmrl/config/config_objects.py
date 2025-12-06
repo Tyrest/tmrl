@@ -11,9 +11,9 @@ from tmrl.custom.tm.tm_gym_interfaces import TM2020Interface, TM2020InterfaceLid
 from tmrl.custom.custom_memories import MemoryTMFull, MemoryTMLidar, MemoryTMLidarProgress, get_local_buffer_sample_lidar, get_local_buffer_sample_lidar_progress, get_local_buffer_sample_tm20_imgs, MemoryTMDino, get_local_buffer_sample_dinov3
 from tmrl.custom.tm.tm_preprocessors import obs_preprocessor_tm_act_in_obs, obs_preprocessor_tm_lidar_act_in_obs, obs_preprocessor_tm_lidar_progress_act_in_obs
 from tmrl.envs import GenericGymEnv
-from tmrl.custom.custom_models import SquashedGaussianMLPActor, MLPActorCritic, REDQMLPActorCritic, RNNActorCritic, SquashedGaussianRNNActor, SquashedGaussianVanillaCNNActor, VanillaCNNActorCritic, SquashedGaussianVanillaColorCNNActor, VanillaColorCNNActorCritic
-from tmrl.custom.models.impoola import ImpoolaCNNActorCritic, SquashedGaussianImpoolaCNNActor
-from tmrl.custom.models.dinov3_policy import DinoV3FeatureActorCritic, SquashedGaussianDinoV3FeatureActor
+from tmrl.custom.custom_models import SquashedGaussianMLPActor, MLPActorCritic, REDQMLPActorCritic, RNNActorCritic, SquashedGaussianRNNActor, SquashedGaussianVanillaCNNActor, VanillaCNNActorCritic, SquashedGaussianVanillaColorCNNActor, VanillaColorCNNActorCritic, REDQVanillaCNNActorCritic, REDQVanillaColorCNNActorCritic
+from tmrl.custom.models.impoola import ImpoolaCNNActorCritic, SquashedGaussianImpoolaCNNActor, REDQImpoolaCNNActorCritic
+from tmrl.custom.models.dinov3_policy import DinoV3FeatureActorCritic, SquashedGaussianDinoV3FeatureActor, REDQDinoV3FeatureActorCritic
 from tmrl.custom.utils.dinov3_preprocessor import DinoV3Preprocessor
 from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
 from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
@@ -38,15 +38,14 @@ if cfg.PRAGMA_LIDAR:
         POLICY = SquashedGaussianMLPActor
 else:
     assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
-    assert ALG_NAME == "SAC", f"{ALG_NAME} is not implemented here."
     if cfg.MODEL_ARCH == "impoola":
-        TRAIN_MODEL = ImpoolaCNNActorCritic
+        TRAIN_MODEL = ImpoolaCNNActorCritic if ALG_NAME == "SAC" else REDQImpoolaCNNActorCritic
         POLICY = SquashedGaussianImpoolaCNNActor
     elif cfg.MODEL_ARCH == "dinov3":
-        TRAIN_MODEL = DinoV3FeatureActorCritic
+        TRAIN_MODEL = DinoV3FeatureActorCritic if ALG_NAME == "SAC" else REDQDinoV3FeatureActorCritic
         POLICY = SquashedGaussianDinoV3FeatureActor
     elif cfg.MODEL_ARCH == "vanilla":
-        TRAIN_MODEL = VanillaCNNActorCritic if cfg.GRAYSCALE else VanillaColorCNNActorCritic
+        TRAIN_MODEL = (VanillaCNNActorCritic if ALG_NAME == "SAC" else REDQVanillaCNNActorCritic) if cfg.GRAYSCALE else (VanillaColorCNNActorCritic if ALG_NAME == "SAC" else REDQVanillaColorCNNActorCritic)
         POLICY = SquashedGaussianVanillaCNNActor if cfg.GRAYSCALE else SquashedGaussianVanillaColorCNNActor
     else:
         raise ValueError(f"Unknown model architecture: {cfg.MODEL_ARCH}")

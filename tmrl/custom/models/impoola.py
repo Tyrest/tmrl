@@ -104,6 +104,23 @@ class ImpoolaCNNActorCritic(nn.Module):
             return a.squeeze().cpu().numpy()
 
 
+class REDQImpoolaCNNActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU, n=10):
+        super().__init__()
+
+        print("Using REDQImpoolaCNNActorCritic model.")
+
+        # build policy and value functions
+        self.actor = SquashedGaussianImpoolaCNNActor(observation_space, action_space, hidden_sizes, activation)
+        self.n = n
+        self.qs = nn.ModuleList([ImpoolaCNNQFunction(observation_space, action_space, hidden_sizes, activation) for _ in range(self.n)])
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.actor(obs, test, False)
+            return a.squeeze().cpu().numpy()
+
+
 class SquashedGaussianImpoolaCNNActor(TorchActorModule):
     def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU):
         super().__init__(observation_space, action_space)
