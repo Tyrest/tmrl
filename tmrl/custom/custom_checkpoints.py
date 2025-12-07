@@ -88,9 +88,9 @@ def update_run_instance(run_instance, training_cls):
     # update training Agent:
     ALG_CONFIG = cfg.TMRL_CONFIG["ALG"]
     ALG_NAME = ALG_CONFIG["ALGORITHM"]
-    assert ALG_NAME in ["SAC", "REDQSAC"], f"{ALG_NAME} is not supported by this checkpoint updater."
+    assert ALG_NAME in ["SAC", "REDQSAC", "TQC"], f"{ALG_NAME} is not supported by this checkpoint updater."
 
-    if ALG_NAME in ["SAC", "REDQSAC"]:
+    if ALG_NAME in ["SAC", "REDQSAC", "TQC"]:
         lr_actor = ALG_CONFIG["LR_ACTOR"]
         lr_critic = ALG_CONFIG["LR_CRITIC"]
         lr_entropy = ALG_CONFIG["LR_ENTROPY"]
@@ -112,6 +112,19 @@ def update_run_instance(run_instance, training_cls):
                 run_instance.agent.lr_critic = lr_critic
                 run_instance.agent.q_optimizer = Adam(itertools.chain(run_instance.agent.model.q1.parameters(), run_instance.agent.model.q2.parameters()), lr=lr_critic)
                 logging.info(f"Critic optimizer reinitialized with new lr: {lr_critic} (old lr: {old}).")
+
+        elif ALG_NAME == "TQC":
+            if run_instance.agent.lr_actor != lr_actor:
+                old = run_instance.agent.lr_actor
+                run_instance.agent.lr_actor = lr_actor
+                run_instance.agent.pi_optimizer = Adam(run_instance.agent.model.actor.parameters(), lr=lr_actor)
+                logging.info(f"Actor optimizer reinitialized with new lr: {lr_actor} (old lr: {old}).")
+
+            if run_instance.agent.lr_critic != lr_critic:
+                old = run_instance.agent.lr_critic
+                run_instance.agent.lr_critic = lr_critic
+                run_instance.agent.q_optimizer_list = [Adam(q.parameters(), lr=lr_critic) for q in run_instance.agent.model.qs]
+                logging.info(f"Critic optimizers reinitialized with new lr: {lr_critic} (old lr: {old}).")
 
         if run_instance.agent.learn_entropy_coef != learn_entropy_coef:
             logging.warning(f"Cannot switch entropy learning.")
@@ -158,6 +171,14 @@ def update_run_instance(run_instance, training_cls):
                 old = run_instance.agent.m
                 run_instance.agent.m = m
                 logging.info(f"M switched to {m} (old: {old}).")
+
+        if ALG_NAME == "TQC":
+            top_quantiles_to_drop_per_net = ALG_CONFIG["TQC_TOP_QUANTILES_TO_DROP_PER_NET"]
+            if run_instance.agent.top_quantiles_to_drop_per_net != top_quantiles_to_drop_per_net:
+                old = run_instance.agent.top_quantiles_to_drop_per_net
+                run_instance.agent.top_quantiles_to_drop_per_net = top_quantiles_to_drop_per_net
+                run_instance.agent.top_quantiles_to_drop = top_quantiles_to_drop_per_net * run_instance.agent.n_nets
+                logging.info(f"Top quantiles to drop per net changed to {top_quantiles_to_drop_per_net} (old: {old}).")
 
     epochs = cfg.TMRL_CONFIG["MAX_EPOCHS"]
     rounds = cfg.TMRL_CONFIG["ROUNDS_PER_EPOCH"]
