@@ -11,17 +11,18 @@ from tmrl.custom.tm.tm_gym_interfaces import TM2020Interface, TM2020InterfaceLid
 from tmrl.custom.custom_memories import MemoryTMFull, MemoryTMLidar, MemoryTMLidarProgress, get_local_buffer_sample_lidar, get_local_buffer_sample_lidar_progress, get_local_buffer_sample_tm20_imgs
 from tmrl.custom.tm.tm_preprocessors import obs_preprocessor_tm_act_in_obs, obs_preprocessor_tm_lidar_act_in_obs, obs_preprocessor_tm_lidar_progress_act_in_obs
 from tmrl.envs import GenericGymEnv
-from tmrl.custom.custom_models import SquashedGaussianMLPActor, MLPActorCritic, REDQMLPActorCritic, TQCMLPActorCritic, SquashedGaussianVanillaCNNActor, VanillaCNNActorCritic, SquashedGaussianVanillaColorCNNActor, VanillaColorCNNActorCritic, TQCVanillaCNNActorCritic, TQCVanillaColorCNNActorCritic
+from tmrl.custom.custom_models import SquashedGaussianMLPActor, MLPActorCritic, REDQMLPActorCritic, TQCMLPActorCritic, DroQMLPActorCritic, SquashedGaussianVanillaCNNActor, VanillaCNNActorCritic, SquashedGaussianVanillaColorCNNActor, VanillaColorCNNActorCritic, TQCVanillaCNNActorCritic, TQCVanillaColorCNNActorCritic, DroQVanillaCNNActorCritic, DroQVanillaColorCNNActorCritic
 from tmrl.custom.custom_algorithms import SpinupSacAgent as SAC_Agent
 from tmrl.custom.custom_algorithms import REDQSACAgent as REDQ_Agent
 from tmrl.custom.custom_algorithms import TQCAgent as TQC_Agent
+from tmrl.custom.custom_algorithms import DroQAgent as DroQ_Agent
 from tmrl.custom.custom_checkpoints import update_run_instance
 from tmrl.util import partial
 
 
 ALG_CONFIG = cfg.TMRL_CONFIG["ALG"]
 ALG_NAME = ALG_CONFIG["ALGORITHM"]
-assert ALG_NAME in ["SAC", "REDQSAC", "TQC"], f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
+assert ALG_NAME in ["SAC", "REDQSAC", "TQC", "DroQ"], f"If you wish to implement {ALG_NAME}, do not use 'ALG' in config.json for that."
 
 
 # MODEL, GYM ENVIRONMENT, REPLAY MEMORY AND TRAINING: ===========
@@ -31,8 +32,10 @@ if cfg.PRAGMA_LIDAR:
         TRAIN_MODEL = MLPActorCritic
     elif ALG_NAME == "REDQSAC":
         TRAIN_MODEL = REDQMLPActorCritic
-    else:
+    elif ALG_NAME == "TQC":
         TRAIN_MODEL = TQCMLPActorCritic
+    else:
+        TRAIN_MODEL = DroQMLPActorCritic
     POLICY = SquashedGaussianMLPActor
 else:
     assert not cfg.PRAGMA_RNN, "RNNs not supported yet"
@@ -40,6 +43,8 @@ else:
         TRAIN_MODEL = VanillaCNNActorCritic if cfg.GRAYSCALE else VanillaColorCNNActorCritic
     elif ALG_NAME == "TQC":
         TRAIN_MODEL = TQCVanillaCNNActorCritic if cfg.GRAYSCALE else TQCVanillaColorCNNActorCritic
+    elif ALG_NAME == "DroQ":
+        TRAIN_MODEL = DroQVanillaCNNActorCritic if cfg.GRAYSCALE else DroQVanillaColorCNNActorCritic
     else:
         raise NotImplementedError(f"{ALG_NAME} is not implemented for images.")
     POLICY = SquashedGaussianVanillaCNNActor if cfg.GRAYSCALE else SquashedGaussianVanillaColorCNNActor
@@ -143,7 +148,7 @@ elif ALG_NAME == "REDQSAC":
         m=ALG_CONFIG["REDQ_M"],  # number of Q targets
         q_updates_per_policy_update=ALG_CONFIG["REDQ_Q_UPDATES_PER_POLICY_UPDATE"]
     )
-else:
+elif ALG_NAME == "TQC":
     AGENT = partial(
         TQC_Agent,
         device='cuda' if cfg.CUDA_TRAINING else 'cpu',
@@ -159,6 +164,22 @@ else:
         top_quantiles_to_drop_per_net=ALG_CONFIG["TQC_TOP_QUANTILES_TO_DROP_PER_NET"],
         n_quantiles=ALG_CONFIG["TQC_N_QUANTILES"],
         n_nets=ALG_CONFIG["TQC_N_NETS"]
+    )
+else:
+    AGENT = partial(
+        DroQ_Agent,
+        device='cuda' if cfg.CUDA_TRAINING else 'cpu',
+        model_cls=TRAIN_MODEL,
+        lr_actor=ALG_CONFIG["LR_ACTOR"],
+        lr_critic=ALG_CONFIG["LR_CRITIC"],
+        lr_entropy=ALG_CONFIG["LR_ENTROPY"],
+        gamma=ALG_CONFIG["GAMMA"],
+        polyak=ALG_CONFIG["POLYAK"],
+        learn_entropy_coef=ALG_CONFIG["LEARN_ENTROPY_COEF"],  # False for SAC v2 with no temperature autotuning
+        target_entropy=ALG_CONFIG["TARGET_ENTROPY"],  # None for automatic
+        alpha=ALG_CONFIG["ALPHA"],  # inverse of reward scale
+        dropout_rate=ALG_CONFIG["DROQ_DROPOUT_RATE"],
+        n_dropout_samples=ALG_CONFIG["DROQ_N_DROPOUT_SAMPLES"]
     )
 
 # TRAINER: =====================================================

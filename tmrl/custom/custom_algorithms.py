@@ -568,3 +568,129 @@ class TQCAgent(TrainingAgent):
             ret_dict["entropy_coef"] = alpha_t.item()
 
         return ret_dict
+
+
+# DroQ =================================================================================================================
+
+
+@dataclass(eq=0)
+class DroQAgent(TrainingAgent):
+    observation_space: type
+    action_space: type
+    device: str = None
+    model_cls: type = core.DroQMLPActorCritic
+    gamma: float = 0.99
+    polyak: float = 0.995
+    alpha: float = 0.2
+    lr_actor: float = 3e-4
+    lr_critic: float = 3e-4
+    lr_entropy: float = 3e-4
+    learn_entropy_coef: bool = True
+    target_entropy: float = None
+    dropout_rate: float = 0.01
+    n_dropout_samples: int = 2
+
+    model_nograd = cached_property(lambda self: no_grad(copy_shared(self.model)))
+
+    def __post_init__(self):
+        observation_space, action_space = self.observation_space, self.action_space
+        device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        model = self.model_cls(observation_space, action_space, dropout_rate=self.dropout_rate)
+        logging.debug(f" device DroQ: {device}")
+        self.model = model.to(device)
+        self.model_target = no_grad(deepcopy(self.model))
+
+        self.pi_optimizer = Adam(self.model.actor.parameters(), lr=self.lr_actor)
+        self.q_optimizer = Adam(itertools.chain(self.model.q1.parameters(), self.model.q2.parameters()), lr=self.lr_critic)
+
+        if self.target_entropy is None:
+            self.target_entropy = -np.prod(action_space.shape)
+        else:
+            self.target_entropy = float(self.target_entropy)
+
+        if self.learn_entropy_coef:
+            self.log_alpha = torch.log(torch.ones(1, device=self.device) * self.alpha).requires_grad_(True)
+            self.alpha_optimizer = Adam([self.log_alpha], lr=self.lr_entropy)
+        else:
+            self.alpha_t = torch.tensor(float(self.alpha)).to(self.device)
+
+    def get_actor(self):
+        return self.model_nograd.actor
+
+    def train(self, batch):
+        o, a, r, o2, d, _ = batch
+
+        pi, logp_pi = self.model.actor(o)
+
+        loss_alpha = None
+        if self.learn_entropy_coef:
+            alpha_t = torch.exp(self.log_alpha.detach())
+            loss_alpha = -(self.log_alpha * (logp_pi + self.target_entropy).detach()).mean()
+        else:
+            alpha_t = self.alpha_t
+
+        if loss_alpha is not None:
+            self.alpha_optimizer.zero_grad()
+            loss_alpha.backward()
+            self.alpha_optimizer.step()
+
+        q1 = self.model.q1(o, a)
+        q2 = self.model.q2(o, a)
+
+        with torch.no_grad():
+            a2, logp_a2 = self.model.actor(o2)
+            
+            # MC-Dropout for target calculation
+            q1_preds = []
+            q2_preds = []
+            self.model_target.train()
+            for _ in range(self.n_dropout_samples):
+                q1_preds.append(self.model_target.q1(o2, a2))
+                q2_preds.append(self.model_target.q2(o2, a2))
+            self.model_target.eval()
+            
+            q1_targ = torch.stack(q1_preds).mean(dim=0)
+            q2_targ = torch.stack(q2_preds).mean(dim=0)
+            
+            q_pi_targ = torch.min(q1_targ, q2_targ)
+            backup = r + self.gamma * (1 - d) * (q_pi_targ - alpha_t * logp_a2)
+
+        loss_q1 = ((q1 - backup)**2).mean()
+        loss_q2 = ((q2 - backup)**2).mean()
+        loss_q = (loss_q1 + loss_q2) / 2
+
+        self.q_optimizer.zero_grad()
+        loss_q.backward()
+        self.q_optimizer.step()
+
+        self.model.q1.requires_grad_(False)
+        self.model.q2.requires_grad_(False)
+
+        q1_pi = self.model.q1(o, pi)
+        q2_pi = self.model.q2(o, pi)
+        q_pi = torch.min(q1_pi, q2_pi)
+
+        loss_pi = (alpha_t * logp_pi - q_pi).mean()
+
+        self.pi_optimizer.zero_grad()
+        loss_pi.backward()
+        self.pi_optimizer.step()
+
+        self.model.q1.requires_grad_(True)
+        self.model.q2.requires_grad_(True)
+
+        with torch.no_grad():
+            for p, p_targ in zip(self.model.parameters(), self.model_target.parameters()):
+                p_targ.data.mul_(self.polyak)
+                p_targ.data.add_((1 - self.polyak) * p.data)
+
+        ret_dict = dict(
+            loss_actor=loss_pi.detach().item(),
+            loss_critic=loss_q.detach().item(),
+        )
+
+        if self.learn_entropy_coef:
+            ret_dict["loss_entropy_coef"] = loss_alpha.detach().item()
+            ret_dict["entropy_coef"] = alpha_t.item()
+
+        return ret_dict

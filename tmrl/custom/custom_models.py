@@ -782,3 +782,138 @@ class TQCVanillaColorCNNActorCritic(TQCVanillaCNNActorCritic):
         super().__init__(observation_space, action_space, n_quantiles, n_nets)
         self.actor = SquashedGaussianVanillaColorCNNActor(observation_space, action_space)
         self.qs = nn.ModuleList([VanillaColorCNNQuantileFunction(observation_space, action_space, n_quantiles) for _ in range(n_nets)])
+
+
+# DroQ MLP: =====================================================
+
+
+class MLPDropoutQFunction(nn.Module):
+    def __init__(self, obs_space, act_space, hidden_sizes=(256, 256), activation=nn.ReLU, dropout_rate=0.01):
+        super().__init__()
+        try:
+            obs_dim = sum(prod(s for s in space.shape) for space in obs_space)
+            self.tuple_obs = True
+        except TypeError:
+            obs_dim = prod(obs_space.shape)
+            self.tuple_obs = False
+        act_dim = act_space.shape[0]
+
+        layers = []
+        sizes = [obs_dim + act_dim] + list(hidden_sizes) + [1]
+        for j in range(len(sizes) - 1):
+            if j < len(sizes) - 2:
+                layers += [nn.Linear(sizes[j], sizes[j + 1]), nn.LayerNorm(sizes[j + 1]), activation(), nn.Dropout(p=dropout_rate)]
+            else:
+                layers += [nn.Linear(sizes[j], sizes[j + 1]), nn.Identity()]
+        self.q = nn.Sequential(*layers)
+
+    def forward(self, obs, act):
+        x = torch.cat((*obs, act), -1) if self.tuple_obs else torch.cat((torch.flatten(obs, start_dim=1), act), -1)
+        q = self.q(x)
+        return torch.squeeze(q, -1)
+
+
+class DroQMLPActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space, hidden_sizes=(256, 256), activation=nn.ReLU, dropout_rate=0.01):
+        super().__init__()
+        self.actor = SquashedGaussianMLPActor(observation_space, action_space, hidden_sizes, activation)
+        self.q1 = MLPDropoutQFunction(observation_space, action_space, hidden_sizes, activation, dropout_rate)
+        self.q2 = MLPDropoutQFunction(observation_space, action_space, hidden_sizes, activation, dropout_rate)
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.actor(obs, test, False)
+            return a.squeeze().cpu().numpy()
+
+
+# DroQ Vanilla CNN: ====================================================================================================
+
+
+class VanillaCNNDropout(Module):
+    def __init__(self, q_net, dropout_rate=0.01):
+        super(VanillaCNNDropout, self).__init__()
+        self.q_net = q_net
+        self.h_out, self.w_out = cfg.IMG_HEIGHT, cfg.IMG_WIDTH
+        hist = cfg.IMG_HIST_LEN
+
+        self.conv1 = Conv2d(hist, 64, 8, stride=2)
+        self.h_out, self.w_out = conv2d_out_dims(self.conv1, self.h_out, self.w_out)
+        self.conv2 = Conv2d(64, 64, 4, stride=2)
+        self.h_out, self.w_out = conv2d_out_dims(self.conv2, self.h_out, self.w_out)
+        self.conv3 = Conv2d(64, 128, 4, stride=2)
+        self.h_out, self.w_out = conv2d_out_dims(self.conv3, self.h_out, self.w_out)
+        self.conv4 = Conv2d(128, 128, 4, stride=2)
+        self.h_out, self.w_out = conv2d_out_dims(self.conv4, self.h_out, self.w_out)
+        self.out_channels = self.conv4.out_channels
+        self.flat_features = self.out_channels * self.h_out * self.w_out
+        self.mlp_input_features = self.flat_features + 12 if self.q_net else self.flat_features + 9
+        self.mlp_layers = [256, 256, 1] if self.q_net else [256, 256]
+        
+        layers = []
+        sizes = [self.mlp_input_features] + self.mlp_layers
+        for j in range(len(sizes) - 1):
+            if j < len(sizes) - 2:
+                layers += [nn.Linear(sizes[j], sizes[j + 1]), nn.LayerNorm(sizes[j + 1]), nn.ReLU(), nn.Dropout(p=dropout_rate)]
+            else:
+                layers += [nn.Linear(sizes[j], sizes[j + 1]), nn.Identity()]
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, x):
+        if self.q_net:
+            speed, gear, rpm, images, act1, act2, act = x
+        else:
+            speed, gear, rpm, images, act1, act2 = x
+
+        x = F.relu(self.conv1(images))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        flat_features = num_flat_features(x)
+        assert flat_features == self.flat_features, f"x.shape:{x.shape}, flat_features:{flat_features}, self.out_channels:{self.out_channels}, self.h_out:{self.h_out}, self.w_out:{self.w_out}"
+        x = x.view(-1, flat_features)
+        if self.q_net:
+            x = torch.cat((speed, gear, rpm, x, act1, act2, act), -1)
+        else:
+            x = torch.cat((speed, gear, rpm, x, act1, act2), -1)
+        x = self.mlp(x)
+        return x
+
+
+class VanillaCNNDropoutQFunction(nn.Module):
+    def __init__(self, observation_space, action_space, dropout_rate=0.01):
+        super().__init__()
+        self.net = VanillaCNNDropout(q_net=True, dropout_rate=dropout_rate)
+
+    def forward(self, obs, act):
+        x = (*obs, act)
+        q = self.net(x)
+        return torch.squeeze(q, -1)
+
+
+class DroQVanillaCNNActorCritic(nn.Module):
+    def __init__(self, observation_space, action_space, dropout_rate=0.01):
+        super().__init__()
+        self.actor = SquashedGaussianVanillaCNNActor(observation_space, action_space)
+        self.q1 = VanillaCNNDropoutQFunction(observation_space, action_space, dropout_rate)
+        self.q2 = VanillaCNNDropoutQFunction(observation_space, action_space, dropout_rate)
+
+    def act(self, obs, test=False):
+        with torch.no_grad():
+            a, _ = self.actor(obs, test, False)
+            return a.squeeze().cpu().numpy()
+
+
+class VanillaColorCNNDropoutQFunction(VanillaCNNDropoutQFunction):
+    def forward(self, obs, act):
+        speed, gear, rpm, images, act1, act2 = obs
+        images = remove_colors(images)
+        obs = (speed, gear, rpm, images, act1, act2)
+        return super().forward(obs, act)
+
+
+class DroQVanillaColorCNNActorCritic(DroQVanillaCNNActorCritic):
+    def __init__(self, observation_space, action_space, dropout_rate=0.01):
+        super().__init__(observation_space, action_space, dropout_rate)
+        self.actor = SquashedGaussianVanillaColorCNNActor(observation_space, action_space)
+        self.q1 = VanillaColorCNNDropoutQFunction(observation_space, action_space, dropout_rate)
+        self.q2 = VanillaColorCNNDropoutQFunction(observation_space, action_space, dropout_rate)
